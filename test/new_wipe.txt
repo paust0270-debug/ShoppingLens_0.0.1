@@ -1,0 +1,59 @@
+stroke = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 7))
+dot = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+prev = None
+
+def caption_span(gray):
+    hh, ww = gray.shape
+    wh = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, stroke)
+    x0, x1 = int(ww * 0.12), int(ww * 0.88)
+    y0, y1 = int(hh * 0.16), int(hh * 0.46)
+    bright = gray[y0:y1, x0:x1] > 175
+    hit = (wh[y0:y1, x0:x1] > 10) & bright
+    score = hit.sum(axis=1).astype(np.float32)
+    smooth = np.convolve(score, np.ones(5) / 5, mode='same')
+    best = None
+    for i in range(2, len(smooth) - 2):
+        if smooth[i] < 160 or smooth[i] < smooth[i - 1] or smooth[i] < smooth[i + 1]:
+            continue
+        a = max(0, i - 26)
+        b = min(len(smooth), i + 26)
+        sl = (wh[y0 + a:y0 + b, x0:x1] > 8) & (gray[y0 + a:y0 + b, x0:x1] > 170)
+        n, _, stats, _ = cv2.connectedComponentsWithStats(sl.astype(np.uint8), 8)
+        if n < 2:
+            continue
+        widths = stats[1:, cv2.CC_STAT_WIDTH]
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        glyphs = widths[(areas > 12) & (widths < 100)]
+        if len(glyphs) < 8 or len(glyphs) > 45:
+            continue
+        med = float(np.median(glyphs))
+        if med < 14 or med > 55:
+            continue
+        if best is None or smooth[i] > best[0]:
+            best = (float(smooth[i]), y0 + a, y0 + b, x0, x1, wh)
+    return best
+
+done = 0
+while done < total:
+    ok, frame = cap.read()
+    if not ok:
+        break
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    found = caption_span(gray)
+    if found is None and prev is not None:
+        _, a, b, x0, x1, _ = prev
+        wh = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, stroke)
+        if ((wh[a:b, x0:x1] > 8) & (gray[a:b, x0:x1] > 170)).sum() > 2500:
+            found = (0, a, b, x0, x1, wh)
+        else:
+            prev = None
+    if found is not None:
+        _, a, b, x0, x1, wh = found
+        prev = found
+        mask = np.zeros(gray.shape, np.uint8)
+        glyphs = (wh[a:b, x0:x1] > 8) | ((gray[a:b, x0:x1] > 215) & (wh[a:b, x0:x1] > 4))
+        mask[a:b, x0:x1] = np.where(glyphs, 255, 0)
+        mask = cv2.dilate(mask, dot, iterations=2)
+        if mask.any():
+            frame = cv2.inpaint(frame, mask, 5, cv2.INPAINT_TELEA)
+    proc.stdin.write(frame.tobytes())

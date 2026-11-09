@@ -1,0 +1,26 @@
+k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+x0, x1 = int(w * 0.12), int(w * 0.96)
+done = 0
+while done < total:
+    ok, frame = cap.read()
+    if not ok:
+        break
+    y1 = min(ht, y + h)
+    if y < y1:
+        band = frame[y:y1]
+        gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (0, 0), 5)
+        dark = (gray < 95) & (blur > 115)
+        bright = (gray > 205) & (blur < 145)
+        ol = np.zeros_like(gray, np.uint8)
+        ol[dark | bright] = 255
+        ol[:, :x0] = 0
+        ol[:, x1:] = 0
+        solid = cv2.dilate(ol, k, iterations=5)
+        keep = np.zeros_like(gray, np.uint8)
+        keep[(solid > 0) & ((gray < 120) | (gray > 185))] = 255
+        keep = cv2.dilate(keep, k, iterations=2)
+        mask = np.where(keep > 0, 255, 0).astype(np.uint8)
+        if mask.any():
+            frame[y:y1] = cv2.inpaint(band, mask, 6, cv2.INPAINT_TELEA)
+    proc.stdin.write(frame.tobytes())

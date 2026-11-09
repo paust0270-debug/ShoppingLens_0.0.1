@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: https: data:; media-src 'self' file:" />
+  <title>쇼핑렌즈</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">◉</div>
+      <div><b>Shopping Lens</b><small>쇼핑 쇼츠 스튜디오</small></div>
+    </div>
+    <nav class="topnav">
+      <button class="nav" data-act="nav" data-val="trend">트렌드</button>
+      <button class="nav" data-act="nav" data-val="lens">분석기</button>
+      <button class="nav" data-act="nav" data-val="work">작업실</button>
+      <button class="nav" data-act="nav" data-val="blast">원클릭배포</button>
+      <button class="nav" data-act="nav" data-val="projects">프로젝트</button>
+      <button class="nav" data-act="nav" data-val="tools">도구</button>
+      <button class="nav" data-act="nav" data-val="settings">설정</button>
+    </nav>
+    <div id="status-slot"></div>
+    <div class="top-right">
+      <button class="btn green sm" data-act="oneClick" title="쿠팡에 같은 제품이 있는 영상만 새로 만듭니다">원클릭 영상 생성</button>
+      <span class="version">v1.3.5</span>
+      <button class="help" data-act="help" title="도움말">?</button>
+    </div>
+  </header>
+  <main id="main"></main>
+  <div id="modal-root"></div>
+  <div id="toast"></div>
+  <script src="presets.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

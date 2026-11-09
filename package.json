@@ -1,0 +1,48 @@
+{
+  "name": "shopping-lens-001",
+  "productName": "ShoppingLens",
+  "version": "0.0.1",
+  "description": "쇼핑렌즈 0.0.1 - 쇼핑 쇼츠 제작 도구",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --win dir"
+  },
+  "build": {
+    "appId": "com.shoppinglens.app001",
+    "productName": "ShoppingLens",
+    "artifactName": "ShoppingLens-0.0.1-${name}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "services/**/*"
+    ],
+    "asarUnpack": [
+      "services/cover_caption.py"
+    ],
+    "directories": {
+      "output": "out"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "dir"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "쇼핑렌즈 0.0.1",
+      "artifactName": "ShoppingLens-0.0.1-Setup.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "sql.js": "^1.15.2"
+  }
+}

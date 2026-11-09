@@ -1,0 +1,14 @@
+const fs = require('fs');
+const s = fs.readFileSync('src/app.js', 'utf8');
+const acts = new Set();
+for (const m of s.matchAll(/data-act="([^"]+)"/g)) acts.add(m[1]);
+const start = s.indexOf('const actions = {');
+const end = s.indexOf('const enterActions');
+const body = s.slice(start, end);
+const keys = new Set();
+for (const m of body.matchAll(/^  ([A-Za-z][A-Za-z0-9]*):/gm)) keys.add(m[1]);
+const missing = [...acts].filter((a) => !keys.has(a)).sort();
+const unused = [...keys].filter((k) => !acts.has(k)).sort();
+console.log('ACTS', acts.size, 'KEYS', keys.size);
+console.log('MISSING', missing.join(', ') || '(none)');
+console.log('UNUSED', unused.join(', ') || '(none)');

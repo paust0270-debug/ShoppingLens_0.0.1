@@ -1,0 +1,19 @@
+node_modules/
+out/
+pack/
+app_build/
+app/
+dist/
+
+*.log
+.env
+.env.*
+settings.json
+**/*credentials*
+*.pem
+*.key
+*.pfx
+
+# 설정 화면 캡처에는 키 앞부분이 보일 수 있음
+test/shots/17-settings.png
+test/shots/full-settings.png
