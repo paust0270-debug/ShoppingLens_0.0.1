@@ -14,6 +14,7 @@ const hooks = require('./hooks');
 const uploader = require('./upload');
 const blast = require('./blast');
 const share = require('./share');
+const telegram = require('./telegram');
 const { cancelAll, checkCancel } = require('./run');
 const social = require('./socialSearch');
 
@@ -21,6 +22,38 @@ const TREND_QUERIES = ['꿀템', '살림템 추천', '신박한 아이템', '다
 const TREND_TAGS = ['#꿀템', '#살림템', '#꿀템추천'];
 
 const fmtDur = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+const LOCAL_VIDEO = /\.(mp4|mov|mkv|webm|m4v|avi)$/i;
+
+async function copyLocalVideos(progress, name, files) {
+  const list = (files || []).filter((src) => src && LOCAL_VIDEO.test(src));
+  if (!list.length) return [];
+  const dir = project.dir(name, 'videos');
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    checkCancel();
+    const src = list[i];
+    progress({ text: `내 PC 영상 넣는 중 (${i + 1}/${list.length})`, progress: i / list.length });
+    const base = `local_${Date.now().toString(36)}_${i}`;
+    const ext = path.extname(src) || '.mp4';
+    const dest = path.join(dir, `${base}${ext}`);
+    fs.copyFileSync(src, dest);
+    const meta = await media.probe(dest);
+    const thumb = await media.frame(dest, Math.min(1, meta.dur / 3), path.join(dir, `${base}.jpg`), 360);
+    out.push({
+      file: dest,
+      thumb,
+      dur: meta.dur,
+      hasAudio: meta.hasAudio,
+      size: fs.statSync(dest).size,
+      title: path.basename(src, ext),
+      done: true,
+      local: true,
+      url: dest,
+      platform: 'local',
+    });
+  }
+  return out;
+}
 
 function fallbackAnalysis(info, transcriptText) {
   const words = info.title.replace(/[^\w가-힣\s]/g, ' ').split(/\s+/).filter((w) => w.length > 1).slice(0, 3);
@@ -84,13 +117,33 @@ function readImages(files, max = 12) {
   return files.slice(0, max).filter((f) => f && fs.existsSync(f)).map((f) => fs.readFileSync(f).toString('base64'));
 }
 
-async function fetchImageFile(url) {
+function imageReferer(href) {
+  if (/1688|alicdn|taobao|tmall/i.test(href)) return 'https://www.1688.com/';
+  if (/xhscdn|xiaohongshu/i.test(href)) return 'https://www.xiaohongshu.com/';
+  return '';
+}
+
+function imageExt(buf, href) {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8) return '.jpg';
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50) return '.png';
+  if (buf.length >= 12 && buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') return '.webp';
+  if (/\.png(\?|$)/i.test(href)) return '.png';
+  if (/\.webp(\?|$)/i.test(href)) return '.webp';
+  return '.jpg';
+}
+
+async function fetchImageFile(url, salt = 0) {
   const href = String(url || '').trim();
   if (!href || !/^https?:\/\//i.test(href)) return '';
-  const res = await fetch(href, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const headers = { 'User-Agent': 'Mozilla/5.0' };
+  const referer = imageReferer(href);
+  if (referer) headers.Referer = referer;
+  const res = await fetch(href, { headers });
   if (!res.ok) return '';
-  const dest = path.join(os.tmpdir(), `sl-thumb-${Date.now().toString(36)}.jpg`);
-  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 400) return '';
+  const dest = path.join(os.tmpdir(), `sl-thumb-${Date.now().toString(36)}-${salt}${imageExt(buf, href)}`);
+  fs.writeFileSync(dest, buf);
   return dest;
 }
 
@@ -281,9 +334,48 @@ const api = {
     const r = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow(), { properties: ['openFile'], filters });
     return r.canceled ? null : r.filePaths[0];
   },
+  importLocalVideos: async (progress, name, limit = 8) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow(), {
+      title: '내 PC 영상 올리기',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '영상', extensions: ['mp4', 'mov', 'mkv', 'webm', 'm4v', 'avi'] }],
+    });
+    if (r.canceled || !r.filePaths.length) return [];
+    return copyLocalVideos(progress, name, r.filePaths.slice(0, Math.max(1, Number(limit) || 8)));
+  },
+  importVideoFiles: (progress, name, files) => copyLocalVideos(progress, name, files),
+  saveRemoteImage: async (_p, url, name) => {
+    const href = String(url || '').trim();
+    if (!href) throw new Error('썸네일 주소가 없습니다.');
+    let buf;
+    let ext = '.jpg';
+    if (/^https?:\/\//i.test(href)) {
+      const res = await fetch(href, { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.coupang.com/' } });
+      if (!res.ok) throw new Error('썸네일을 받지 못했습니다.');
+      const type = res.headers.get('content-type') || '';
+      if (/png/i.test(type) || /\.png(\?|$)/i.test(href)) ext = '.png';
+      else if (/webp/i.test(type) || /\.webp(\?|$)/i.test(href)) ext = '.webp';
+      buf = Buffer.from(await res.arrayBuffer());
+    } else if (fs.existsSync(href)) {
+      ext = path.extname(href) || '.jpg';
+      buf = fs.readFileSync(href);
+    } else throw new Error('썸네일을 찾지 못했습니다.');
+    if (!buf?.length) throw new Error('썸네일 파일이 비어 있습니다.');
+    const safe = String(name || 'coupang-thumb').replace(/[<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || 'coupang-thumb';
+    const r = await dialog.showSaveDialog(BrowserWindow.getFocusedWindow(), {
+      title: '쿠팡 썸네일 저장',
+      defaultPath: `${safe}${ext}`,
+      filters: [{ name: '이미지', extensions: [ext.slice(1), 'jpg', 'png', 'webp'] }],
+    });
+    if (r.canceled || !r.filePath) return '';
+    fs.writeFileSync(r.filePath, buf);
+    return r.filePath;
+  },
 
   /* projects */
   listProjects: () => project.list(),
+  listFinished: () => project.listFinished(),
+  openFinishedDir: () => shell.openPath(path.join(project.collectRoot(), 'one_mp4')),
   saveProject: (_p, p) => project.save(p),
   loadProject: (_p, name) => project.load(name),
 
@@ -335,7 +427,7 @@ const api = {
     if (!list.length) list = await yt.searchYoutube(query, { limit: 30, filter: 'short' });
     return list.filter((v) => !v.dur || v.dur <= 180);
   },
-  searchSocial: async (progress, platform, query) => {
+  searchSocial: async (progress, platform, query, page = 1) => {
     const presets = require('../src/presets');
     const p = (presets.platforms || []).find((x) => x.id === platform);
     if (!p?.search) throw new Error('이 플랫폼은 목록 검색을 지원하지 않습니다.');
@@ -355,6 +447,8 @@ const api = {
     }
     progress({ text: `${p.label} 검색 목록 가져오는 중` });
     let url = p.search(q);
+    const pageNo = Math.max(1, Number(page) || 1);
+    if (platform === 'ali1688' && pageNo > 1) url += `${url.includes('?') ? '&' : '?'}beginPage=${pageNo}`;
     if (platform === 'douyin') url += (url.includes('?') ? '&' : '?') + 'type=video';
     return social.searchSocial(platform, url, p.label);
   },
@@ -364,8 +458,8 @@ const api = {
     return social.searchByImage(platform, imageUrl, label);
   },
   grabSocialVideo: async (progress, url, platform) => {
-    progress({ text: '상품 페이지에서 영상 찾는 중 · 접속 이상이 뜨면 영상 상세가 숨겨집니다. 크롬에서 안내가 사라지면 이어갑니다' });
-    return social.grabSocialVideo(url, platform);
+    progress({ text: `상품 페이지에서 영상 찾는 중 · ${platform || ''} ${String(url || '').slice(0, 80)}` });
+    return social.grabSocialVideo(url, platform, progress);
   },
   matchSocial: async (progress, query, zh, platforms) => {
     const q = String(query || zh || '').trim();
@@ -431,6 +525,30 @@ const api = {
   },
   matchXhs: async (progress, query, zh) => {
     return api.matchSocial(progress, query, zh, ['xhs']);
+  },
+  relatedZh: async (_p, keyword, used) => {
+    if (!ai.hasAI()) return [];
+    try {
+      return await ai.relatedZh(keyword, used);
+    } catch (e) {
+      if (/CANCELLED/.test(String(e.message))) throw e;
+      return [];
+    }
+  },
+  videoFrameZh: async (_p, url) => {
+    const href = String(url || '').trim();
+    if (!/^https?:\/\//i.test(href) || /\.m3u8(\?|$)/i.test(href)) return false;
+    const dest = path.join(os.tmpdir(), `sl-vframe-${Date.now().toString(36)}.jpg`);
+    try {
+      await media.frameFromUrl(href, dest, social.refererFor(href, 'ali1688'));
+      if (!fs.existsSync(dest)) return false;
+      return (await media.zhStills([dest])).length > 0;
+    } catch (e) {
+      if (/CANCELLED/.test(String(e.message))) throw e;
+      return false;
+    } finally {
+      fs.rmSync(dest, { force: true });
+    }
   },
   translateZh: async (_p, text) => {
     const q = String(text || '').trim();
@@ -589,16 +707,35 @@ const api = {
     const base = `src${index + 1}_${Date.now().toString(36)}`;
     let file;
     if (video.media && /^https?:/i.test(video.media) && !/\.m3u8(\?|$)/i.test(video.media)) {
-      progress({ text: '상품 영상 받는 중' });
-      file = await social.fetchSocialFile(video.media, path.join(dir, `${base}.mp4`), video.platform);
+      progress({ text: `상품 영상 받는 중 · ${video.platform || ''} ${String(video.title || video.url || '').slice(0, 40)}` });
+      file = await social.fetchSocialFile(video.media, path.join(dir, `${base}.mp4`), video.platform, video.url, progress);
     } else {
       file = await yt.download(video.url, dir, base, (r) => progress({ progress: r }));
     }
     const meta = await media.probe(file);
     const thumb = await media.frame(file, Math.min(1, meta.dur / 3), path.join(dir, `${base}.jpg`), 360);
+    project.collectCopy('main_mp4', file, name, `src${index + 1}`);
     return { file, thumb, dur: meta.dur, hasAudio: meta.hasAudio, size: fs.statSync(file).size };
   },
   probeCaption: async (_progress, file) => ({ has: await media.hasBurnedCaption(file) }),
+  thumbZh: async (_progress, urls) => {
+    const list = [...new Set((Array.isArray(urls) ? urls : [urls]).map((s) => String(s || '').trim()).filter((u) => /^https?:\/\//i.test(u)))];
+    const files = [];
+    const back = [];
+    for (let i = 0; i < list.length; i++) {
+      try {
+        const saved = await fetchImageFile(list[i], i);
+        if (saved) {
+          files.push(saved);
+          back.push(list[i]);
+        }
+      } catch (e) {
+        if (/CANCELLED/.test(String(e.message))) throw e;
+      }
+    }
+    const bad = new Set(await media.zhStills(files));
+    return back.filter((url, i) => bad.has(files[i]));
+  },
   judgeSource: (progress, input) => judgeSource(progress, input),
   analyzeSources: async (progress, name, videos) => {
     const out = [];
@@ -624,20 +761,22 @@ const api = {
       const source = v.file;
       const burned = await media.hasBurnedCaption(source);
       let band = null;
-      if (burned && ai.hasAI() && scenes.length) {
+      if (ai.hasAI() && scenes.length) {
         const picks = [scenes[0], scenes[Math.floor(scenes.length / 2)], scenes[scenes.length - 1]];
         try {
           const found = await ai.captionBand(readImages(picks.map((s) => s.thumb), 3));
           const y = Number(found?.y);
           const h = Number(found?.h);
-          if (Number.isFinite(y) && Number.isFinite(h) && h >= 0.04) band = { y: Math.max(0, y - 0.02), h: Math.min(0.28, h + 0.04) };
+          if (Number.isFinite(y) && Number.isFinite(h) && h >= 0.04) band = { y: Math.max(0, y - 0.03), h: Math.min(0.30, h + 0.06) };
         } catch (e) {
           if (/CANCELLED/.test(e.message)) throw e;
         }
       }
-      progress({ text: burned ? `소스 ${i + 1} 원본 음성·자막 지우는 중` : `소스 ${i + 1} 원본 음성만 끄는 중`, progress: (i + 0.85) / videos.length });
+      const wipe = !!(v.local || v.forceClean || burned || band);
+      progress({ text: wipe ? `소스 ${i + 1} 중국어 자막 자리 지우는 중` : `소스 ${i + 1} 원본 음성만 끄는 중`, progress: (i + 0.85) / videos.length });
       const cleaned = path.join(project.dir(name, 'videos'), `src${i + 1}_clean.mp4`);
-      await media.cleanSource(source, cleaned, burned ? (band || {}) : null, (r) => progress({ text: `소스 ${i + 1} 원본 음성·자막 지우는 중`, progress: (i + 0.85 + r * 0.15) / videos.length }));
+      const cleanedR = await media.cleanSource(source, cleaned, wipe ? (band || {}) : null, (r) => progress({ text: `소스 ${i + 1} 중국어 자막 자리 지우는 중`, progress: (i + 0.85 + r * 0.15) / videos.length }));
+      if (cleanedR?.band) band = cleanedR.band;
       const sceneDir = project.dir(name, 'scenes');
       for (let k = 0; k < scenes.length; k++) {
         checkCancel();
@@ -732,7 +871,11 @@ const api = {
     const voiceFile = await media.concatAudio(out.map((a) => a.file), path.join(dir, `voice_${Date.now().toString(36)}.wav`));
     return { audios: out, voiceFile };
   },
-  render: (progress, name, payload) => media.render(project.dir(name), payload, progress),
+  render: async (progress, name, payload) => {
+    const file = await media.render(project.dir(name), payload, progress);
+    project.collectCopy('one_mp4', file, name, 'final');
+    return file;
+  },
   makeThumb: (_p, name, file, t) => media.frame(file, t, path.join(project.dir(name, 'output'), `thumbnail_${Date.now().toString(36)}.jpg`), 1080),
   composeThumb: async (_p, name, file, t, opts) => {
     const dir = project.dir(name, 'output');
@@ -743,7 +886,11 @@ const api = {
     fs.rmSync(raw, { force: true });
     return out;
   },
-  prependThumb: (_p, name, video, image) => media.prependStill(video, image, 5, path.join(project.dir(name, 'output'), `final_lead_${Date.now().toString(36)}.mp4`)),
+  prependThumb: async (_p, name, video, image) => {
+    const file = await media.prependStill(video, image, 5, path.join(project.dir(name, 'output'), `final_lead_${Date.now().toString(36)}.mp4`));
+    project.collectCopy('one_mp4', file, name, 'final');
+    return file;
+  },
   makeIntro: (_p, name, image, text) => {
     const out = path.join(project.dir(name, 'videos'), `intro_${Date.now().toString(36)}.mp4`);
     fs.mkdirSync(path.dirname(out), { recursive: true });
@@ -787,6 +934,8 @@ const api = {
   },
   shareStart: (_p, file) => share.start(file),
   shareStop: () => { share.stop(); return true; },
+  telegramConnect: () => telegram.connect(),
+  telegramSend: (_p, file, caption) => telegram.sendVideo(file, caption),
   saveText: (_p, name, rel, text) => {
     const file = path.join(project.dir(name), rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -815,11 +964,12 @@ const api = {
     progress({ text: 'AI 업로드 문구 작성 중' });
     return ai.uploadTexts({ ...ctx, product: ctx.product || ctx.productName });
   },
-  youtubeConnect: () => uploader.youtubeConnect(),
+  youtubeConnect: (progress) => uploader.youtubeConnect(progress),
+  youtubeChannelUrl: () => uploader.youtubeCheck(),
   upload: (progress, platform, file, meta) => uploader.upload(platform, file, meta, progress),
 
   /* multi publisher */
-  snsConnect: (_p, key) => uploader.connect(key),
+  snsConnect: (progress, key) => uploader.connect(key, progress),
   snsCheckAll: async (_p, keys) => Object.fromEntries(await Promise.all(keys.map(async (k) => [k, await uploader.check(k)]))),
   snsDisconnect: (_p, key) => uploader.disconnect(key),
   blast: (progress, payload) => blast.blast(progress, payload),

@@ -29,6 +29,18 @@ function frame(file, t, out, width = 240) {
   return ff(['-y', '-ss', String(Math.max(0, t)), '-i', file, '-frames:v', '1', '-vf', `scale=${width}:-2`, '-q:v', '4', out]).then(() => out);
 }
 
+async function frameFromUrl(url, out, referer) {
+  tools.ensureReady();
+  const headers = `Referer: ${referer || 'https://www.1688.com/'}\r\nUser-Agent: Mozilla/5.0\r\n`;
+  await run(tools.paths().ffmpeg, [
+    '-hide_banner', '-y',
+    '-headers', headers,
+    '-ss', '0.5', '-i', url,
+    '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '5', out,
+  ], { timeout: 20000 });
+  return out;
+}
+
 const timeOf = (l) => {
   const m = l.match(/time=(\d+):(\d+):([\d.]+)/);
   return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : null;
@@ -139,6 +151,12 @@ function assColor(hex, alpha = 0) {
 
 const assText = (s) => String(s).replace(/[{}]/g, '').replace(/\n/g, '\\N');
 
+function randomHeadStat() {
+  const views = 200 + Math.floor(Math.random() * 301);
+  const comments = 300 + Math.floor(Math.random() * 601);
+  return `조회수 ${views}만 | 댓글 ${comments}개`;
+}
+
 function reelTitle(text) {
   const s = String(text || '일본 천재가 개발해 떼돈 번 제품').replace(/\s+/g, ' ').trim();
   if (s.includes('\n') || [...s].length <= 14) return s;
@@ -149,10 +167,9 @@ function reelTitle(text) {
 
 function buildAss({ subs, edit, header, total }) {
   const font = edit.font || 'Malgun Gothic';
-  const border = edit.bg ? 3 : 1;
-  const outline = edit.bg ? 14 : edit.border ? 6 : 0;
+  const outline = (edit.border || edit.captionCover || edit.bg) ? 8 : 0;
   const style = (name, size, color, bold, italic, align) =>
-    `Style: ${name},${font},${size},${color},&H00FFFFFF,&H00000000,${edit.bg && name === 'Sub' ? '&H90000000' : '&H80000000'},${bold ? -1 : 0},${italic ? -1 : 0},0,0,100,100,0,0,${name === 'Sub' ? border : 1},${name === 'Sub' ? outline : 0},${edit.shadow && name === 'Sub' ? 4 : 0},${align},40,40,0,1`;
+    `Style: ${name},${font},${size},${color},&H00FFFFFF,&H00000000,&HFF000000,${bold ? -1 : 0},${italic ? -1 : 0},0,0,100,100,0,0,1,${name === 'Sub' ? outline : 0},0,${align},40,40,0,1`;
   const lines = [
     '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 1080', 'PlayResY: 1920', 'WrapStyle: 0', '',
     '[V4+ Styles]',
@@ -168,7 +185,7 @@ function buildAss({ subs, edit, header, total }) {
   if (header?.look === 'reel' && header?.show) {
     const channel = assText(String(header.top || '꿀템나라').replace(/\s+/g, '').split('').join(' '));
     const title = assText(reelTitle(header.title));
-    const stat = assText(header.stat || '조회수 235만 | 댓글 697개');
+    const stat = assText(header.stat || randomHeadStat());
     lines.push(`Dialogue: 4,${assTime(0)},${assTime(total)},HeadK,,0,0,0,,{\\an5\\pos(90,78)\\fs42\\b1\\i0\\bord0\\shad0\\c&H00FFFFFF&}≡`);
     lines.push(`Dialogue: 4,${assTime(0)},${assTime(total)},HeadK,,0,0,0,,{\\an5\\pos(540,78)\\fs46\\b1\\i0\\bord0\\shad0\\c&H00FFFFFF&}${channel}`);
     lines.push(`Dialogue: 4,${assTime(0)},${assTime(total)},HeadK,,0,0,0,,{\\an5\\pos(990,78)\\fs46\\b1\\i0\\bord0\\shad0\\c&H00FFFFFF&}⌕`);
@@ -183,10 +200,10 @@ function buildAss({ subs, edit, header, total }) {
   }
   const subY = Number.isFinite(Number(edit.subY))
     ? Math.max(120, Math.min(1800, Math.round(Number(edit.subY))))
-    : ({ pill: 1360, fade: 1420, glass: 1380, ticker: 1560, soft: 1400, film: 960, polaroid: 1480, pastel: 1460 }[header?.look] || 820);
+    : ({ pill: 1360, fade: 1420, glass: 1380, ticker: 1560, soft: 1400, film: 960, polaroid: 1480, pastel: 1460, reel: 1375 }[header?.look] || 1375);
   for (const s of subs || []) {
     const y = Number.isFinite(Number(s.y)) ? Math.max(120, Math.min(1800, Math.round(Number(s.y)))) : subY;
-    lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,{\\pos(540,${y})}${assText(s.text)}`);
+    lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,{\\an5\\pos(540,${y})\\bord${outline}\\shad0\\blur0\\be0\\3c&H000000&\\3a&H00&\\4a&HFF&}${assText(s.text)}`);
   }
   for (const o of edit.overlays || []) {
     if (o.kind !== 'text' || !o.text) continue;
@@ -195,7 +212,8 @@ function buildAss({ subs, edit, header, total }) {
     const aa = Math.round((1 - (o.opacity ?? 100) / 100) * 255).toString(16).padStart(2, '0');
     const tags = [
       `\\pos(${x},${y})`, `\\an5`, `\\fs${o.size || 72}`, `\\1a&H${aa}&`, `\\c${assColor(o.color || '#ffffff')}`,
-      o.bold ? '\\b1' : '\\b0', o.italic ? '\\i1' : '\\i0', o.outline ? '\\bord4' : '\\bord0', o.shadow ? '\\shad3' : '\\shad0',
+      o.bold ? '\\b1' : '\\b0', o.italic ? '\\i1' : '\\i0', o.outline ? '\\bord4' : '\\bord0',
+      o.shadow ? '\\shad2\\4c&H000000&\\4a&H00&' : '\\shad0\\4a&HFF&', '\\blur0',
     ].join('');
     lines.push(`Dialogue: 2,${assTime(0)},${assTime(total)},Sub,,0,0,0,,{${tags}}${assText(o.text)}`);
   }
@@ -508,15 +526,26 @@ async function stripAudio(file, out) {
   return out;
 }
 
+function parseRatio(text, fallback) {
+  const m = String(text || '').match(/ratio\s+([\d.]+)\s+([\d.]+)/);
+  if (!m) return fallback || null;
+  const y = Number(m[1]);
+  const h = Number(m[2]);
+  if (!Number.isFinite(y) || !Number.isFinite(h) || h < 0.03) return fallback || null;
+  return { y: Math.max(0, Math.min(0.9, y)), h: Math.max(0.04, Math.min(0.28, h)) };
+}
+
 async function cleanSource(file, out, band, onProgress) {
-  if (band == null) return stripAudio(file, out);
+  if (band == null) return { out: await stripAudio(file, out), band: null };
   const hasHint = Number.isFinite(Number(band.y)) && Number(band.h) >= 0.04;
   const script = serviceFile('cover_caption.py');
   const extra = [];
-  if (hasHint) {
-    const y = Math.max(0, Math.min(0.8, Number(band.y)));
-    let h = Math.max(0.05, Math.min(0.22, Number(band.h)));
-    if (y + h > 0.94) h = 0.94 - y;
+  const y0 = hasHint ? Number(band.y) : 0.72;
+  const h0 = hasHint ? Number(band.h) : 0.26;
+  {
+    const y = Math.max(0.78, Math.min(0.88, y0));
+    let h = Math.max(0.10, Math.min(0.18, h0));
+    if (y + h > 0.99) h = 0.99 - y;
     const meta = await probe(file);
     const H = meta.height || 1920;
     const yPx = Math.max(0, Math.floor((H * y) / 2) * 2);
@@ -524,18 +553,22 @@ async function cleanSource(file, out, band, onProgress) {
     if (yPx + hPx > H - 4) hPx = Math.floor((H - yPx - 4) / 2) * 2;
     extra.push(String(yPx), String(hPx), '0');
   }
+  let detected = hasHint ? { y: Number(band.y), h: Number(band.h) } : null;
   try {
-    await run(pythonArgs()[0], [...pythonArgs().slice(1), script, file, out, ...extra], {
+    const { out: log } = await run(pythonArgs()[0], [...pythonArgs().slice(1), script, file, out, ...extra], {
       onLine: (l) => {
         const m = l.match(/^(\d+)\/(\d+)/);
         if (m && onProgress) onProgress(Math.min(1, Number(m[1]) / Number(m[2])));
+        const ratio = parseRatio(l, null);
+        if (ratio) detected = ratio;
       },
     });
+    detected = parseRatio(log, detected);
   } catch (e) {
     if (String(e && e.message).includes('CANCELLED')) throw e;
     await stripAudio(file, out);
   }
-  return out;
+  return { out, band: detected };
 }
 
 async function synthSfx(text, out, volume = 0.8) {
@@ -571,4 +604,19 @@ async function hasStillCaption(file) {
   }
 }
 
-module.exports = { probe, frame, detectScenes, toWav, scaleAudio, concatAudio, render, removeSilence, extractAudio, buildAss, composeStill, prependStill, introClip, synthSfx, cleanSource, hasBurnedCaption, hasStillCaption };
+async function zhStills(files) {
+  const list = (files || []).filter((f) => f && fs.existsSync(f));
+  if (!list.length) return [];
+  const script = serviceFile('cover_caption.py');
+  try {
+    const { out } = await run(pythonArgs()[0], [...pythonArgs().slice(1), script, '--probe-zh', ...list]);
+    const lines = out.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^zh (yes|no)$/.test(line));
+    if (lines.length !== list.length) return [];
+    return list.filter((_, i) => lines[i] === 'zh yes');
+  } catch (e) {
+    if (String(e && e.message).includes('CANCELLED')) throw e;
+    return [];
+  }
+}
+
+module.exports = { probe, frame, frameFromUrl, detectScenes, toWav, scaleAudio, concatAudio, render, removeSilence, extractAudio, buildAss, composeStill, prependStill, introClip, synthSfx, cleanSource, hasBurnedCaption, hasStillCaption, zhStills };

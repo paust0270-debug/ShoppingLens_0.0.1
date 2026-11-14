@@ -173,7 +173,14 @@ async function voices(provider) {
     const body = await res.json();
     if (!res.ok) throw new Error(`Typecast 오류: ${body.message || res.status}`);
     const list = Array.isArray(body) ? body : body.voices || body.result || [];
-    return list.map((v) => ({ id: v.voice_id || v.id, name: v.voice_name || v.name, model: v.model, emotions: v.emotions || [] }));
+    return list.map((v) => ({
+      id: v.voice_id || v.id,
+      name: v.voice_name || v.name,
+      model: v.model,
+      emotions: v.emotions || [],
+      lang: v.language || v.lang || v.language_code || '',
+      gender: v.gender || '',
+    })).filter((v) => v.id);
   }
   const { out } = await run('powershell', [
     '-NoProfile', '-NonInteractive', '-Command',
@@ -187,6 +194,20 @@ async function voices(provider) {
       return { id: name.trim(), name: `${name.trim()} (${(culture || '').trim()})`, ko: /ko/i.test(culture || '') };
     })
     .sort((a, b) => Number(b.ko) - Number(a.ko));
+}
+
+function pickKoVoice(list) {
+  const rows = (list || []).filter((v) => v?.id);
+  if (!rows.length) return null;
+  const score = (v) => {
+    const blob = `${v.name || ''} ${v.lang || ''} ${v.gender || ''}`;
+    let n = 0;
+    if (/ko|kor|한국/i.test(blob)) n += 6;
+    if (/female|여|woman/i.test(blob)) n += 2;
+    if (/밝|명랑|cheer|bright|쇼핑|내레/i.test(blob)) n += 1;
+    return n;
+  };
+  return [...rows].sort((a, b) => score(b) - score(a))[0];
 }
 
 async function credits(provider) {
@@ -222,7 +243,8 @@ async function synth(text, opt, outBase) {
           return sped;
         }
         const msg = body.error?.message || JSON.stringify(body).slice(0, 200);
-        if (res.status !== 429) throw new Error(`Gemini 음성 오류 (${res.status}): ${msg}`);
+        const busy = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504 || /high demand|UNAVAILABLE|overloaded/i.test(msg);
+        if (!busy) throw new Error(`Gemini 음성 오류 (${res.status}): ${msg}`);
         lastMsg = msg;
         waitSec = Math.max(waitSec, retryAfter || 20);
       }
@@ -273,13 +295,18 @@ async function synth(text, opt, outBase) {
     return out;
   }
   if (opt.provider === 'typecast') {
-    if (!s.typecast) throw new Error('Typecast API 키가 없습니다.');
-    if (!opt.voice) throw new Error('목소리를 선택하세요.');
+    if (!s.typecast) throw new Error('Typecast API 키가 없습니다. 설정에서 입력하세요.');
+    let voice = opt.voice;
+    if (!voice) {
+      const picked = pickKoVoice(await voices('typecast'));
+      voice = picked?.id || '';
+    }
+    if (!voice) throw new Error('Typecast 한국어 목소리를 찾지 못했습니다.');
     const res = await fetch('https://api.typecast.ai/v1/text-to-speech', {
       method: 'POST',
       headers: { 'X-API-KEY': s.typecast, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        voice_id: opt.voice,
+        voice_id: voice,
         text,
         model: opt.model || 'ssfm-v21',
         language: 'kor',
@@ -289,7 +316,18 @@ async function synth(text, opt, outBase) {
     });
     if (!res.ok) throw new Error(`Typecast 오류 (${res.status}): ${(await res.text()).slice(0, 200)}`);
     const out = outBase + '.mp3';
-    fs.writeFileSync(out, Buffer.from(await res.arrayBuffer()));
+    const buf = Buffer.from(await res.arrayBuffer());
+    const look = buf.slice(0, 8).toString('utf8');
+    if (look.startsWith('{')) {
+      const j = JSON.parse(buf.toString('utf8'));
+      const href = j.audio_download_url || j.result?.audio_url || j.url || j.audio_url;
+      if (!href) throw new Error('Typecast 음성 주소를 받지 못했습니다.');
+      const audio = await fetch(href);
+      if (!audio.ok) throw new Error(`Typecast 음성 받기 실패 (${audio.status})`);
+      fs.writeFileSync(out, Buffer.from(await audio.arrayBuffer()));
+    } else {
+      fs.writeFileSync(out, buf);
+    }
     return out;
   }
   const txt = outBase + '.txt';

@@ -62,6 +62,22 @@ async function api(name, ...args) {
   return r.data;
 }
 
+const SAMPLE_HEAD_STAT = '조회수 235만 | 댓글 697개';
+
+function randInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function randomHeadStat() {
+  return `조회수 ${randInt(200, 500)}만 | 댓글 ${randInt(300, 900)}개`;
+}
+
+function ensureHeadStat(edit) {
+  if (!edit) return '';
+  if (!edit.headStat || edit.headStat === SAMPLE_HEAD_STAT) edit.headStat = randomHeadStat();
+  return edit.headStat;
+}
+
 function dropSampleHeader(edit) {
   if (!edit) return;
   if (edit.headTop === '리뷰왕' && edit.headTitle === '이게 대체 뭐야?') {
@@ -69,6 +85,7 @@ function dropSampleHeader(edit) {
     edit.headTop = '';
     edit.headTitle = '';
   }
+  ensureHeadStat(edit);
 }
 
 function newProject(name = '새 프로젝트') {
@@ -82,7 +99,7 @@ function newProject(name = '새 프로젝트') {
     scenes: [], subtitles: [], subMaxChars: 12,
     edit: {
       font: 'Malgun Gothic', size: 85, italic: false, bg: false, border: true, shadow: false, subMode: 'short',
-      template: 2, header: false, headTop: '', headTitle: '', headStat: '조회수 235만 | 댓글 697개', voice: true, sub: true,
+      template: 2, header: false, headTop: '', headTitle: '', headStat: randomHeadStat(), voice: true, sub: true,
       filter: 'none', effect: 'none', transition: false, bgm: null, sfx: [],
       showTemplateImage: false, templateImage: null,
       overlays: [], thumbItems: [],
@@ -103,10 +120,10 @@ const state = {
   trends: [], trendsLoading: false, trendsError: '', trendSource: '', trendNotice: '',
   favs: JSON.parse(localStorage.getItem('sl-favs') || '[]'),
   analysis: {}, liveText: '',
-  selected: null, findQ1: '', findQ2: '', findCoupangUrl: '', findResults: [], pairs: [], coupangHits: [], findLoading: false, findNote: '', platform: 'all', findVideoOnly: true, added: [],
+  selected: null, findQ1: '', findQ2: '', zhSource: '', zhManual: false, findCoupangUrl: '', findResults: [], pairs: [], coupangHits: [], findLoading: false, findNote: '', platform: 'all', findVideoOnly: true, added: [],
   workTab: 1, status: null, busy: false, selectedScene: 0, rightPanel: 'text',
   playing: false, time: 0, uploadPick: 0, uploadTexts: null,
-  voices: {}, credits: null, projects: [], tools: {}, aiStatus: {},
+  voices: {}, credits: null, projects: [], finished: [], tools: {}, aiStatus: {},
   modal: null, settings: {}, selectedOverlay: null, exportOpen: false, stickerOpen: false,
   intro: { line: '예상 못한 한 장면으로 손이 멈춥니다.', scene: 0 },
   sfxDraft: { make: '', remove: '', volume: 40, log: '' },
@@ -140,16 +157,66 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
 }
 
+function pushStatusLog(line) {
+  if (!state.status) return;
+  const text = String(line || '').replace(/\s+/g, ' ').trim();
+  if (!text) return;
+  const logs = state.status.logs || (state.status.logs = []);
+  const t = new Date().toISOString().slice(11, 19);
+  const row = `[${t}] ${text}`;
+  if (logs[logs.length - 1]?.slice(11) === text) return;
+  logs.push(row);
+  if (logs.length > 120) logs.splice(0, logs.length - 120);
+}
+
+function statusLogText() {
+  const s = state.status;
+  if (!s) return '';
+  return [...(s.logs || []), s.text ? `현재: ${s.text}` : ''].filter(Boolean).join('\n');
+}
+
 function statusHtml() {
   const s = state.status;
   if (!s) return '';
+  const logs = (s.logs || []).join('\n');
+  const copy = `<button class="btn sm" data-act="copyStatusLog" title="진행 로그 복사">로그 복사</button>`;
+  const toggle = logs
+    ? `<button class="btn sm" data-act="toggleStatusLog">${s.logClosed ? '로그 보기' : '로그 닫기'}</button>`
+    : '';
+  const logBox = logs && !s.logClosed
+    ? `<div class="status-log-wrap">
+        <button class="status-log-close" data-act="toggleStatusLog" title="로그 닫기">✕</button>
+        <pre class="status-log" id="status-log">${esc(logs)}</pre>
+      </div>`
+    : '';
   if (s.running) {
-    return `<div class="status running"><span>${esc(s.text)} [${mmss(s.elapsed || 0)}]</span><div class="bar"><i style="width:${(s.progress || 0) * 100}%"></i></div><button class="btn sm" data-act="stop">중지</button></div>`;
+    return `<div class="status-box">
+      <div class="status running">
+        <span class="status-now" title="${esc(s.text)}">${esc(s.text)} [${mmss(s.elapsed || 0)}]</span>
+        <div class="bar"><i style="width:${(s.progress || 0) * 100}%"></i></div>
+        ${copy}
+        ${toggle}
+        <button class="btn sm" data-act="stop">중지</button>
+      </div>
+      ${logBox}
+    </div>`;
   }
-  return `<div class="status ${s.error ? 'error' : 'done'}" title="${esc(s.text)}">${esc(s.text)}<button class="x-btn" data-act="clearStatus">✕</button></div>`;
+  return `<div class="status-box">
+    <div class="status ${s.error ? 'error' : 'done'}" title="${esc(s.text)}">
+      <span class="status-now">${esc(s.text)}</span>
+      ${copy}
+      ${toggle}
+      <button class="x-btn" data-act="clearStatus">✕</button>
+    </div>
+    ${logBox}
+  </div>`;
 }
 function updateStatus() {
-  $('#status-slot').innerHTML = statusHtml();
+  const slot = $('#status-slot');
+  if (!slot) return;
+  slot.innerHTML = statusHtml();
+  const log = slot.querySelector('.status-log');
+  if (log) log.scrollTop = log.scrollHeight;
 }
 
 async function task(runText, fn, doneText) {
@@ -158,8 +225,10 @@ async function task(runText, fn, doneText) {
     return undefined;
   }
   state.busy = true;
+  state.stop = false;
   const start = Date.now();
-  state.status = { running: true, text: runText, progress: 0, elapsed: 0 };
+  state.status = { running: true, text: runText, progress: 0, elapsed: 0, logs: [] };
+  pushStatusLog(runText);
   const tick = setInterval(() => {
     state.status.elapsed = (Date.now() - start) / 1000;
     updateStatus();
@@ -167,14 +236,29 @@ async function task(runText, fn, doneText) {
   render();
   try {
     const r = await fn();
-    const text = typeof doneText === 'function' ? doneText(r) : doneText;
-    state.status = { running: false, text: `${text} (소요시간: ${mmss((Date.now() - start) / 1000)})` };
+    const produced = typeof doneText === 'function' ? doneText(r) : doneText;
+    const text = produced || (typeof r === 'string' ? r : '완료');
+    const prev = state.status || {};
+    state.status = {
+      running: false,
+      text: `${text} (소요시간: ${mmss((Date.now() - start) / 1000)})`,
+      logs: prev.logs || [],
+      logClosed: !!prev.logClosed,
+    };
     autosave();
     return r;
   } catch (e) {
     const cancelled = /CANCELLED/.test(e.message);
-    state.status = { running: false, error: !cancelled, text: cancelled ? '작업을 중지했습니다.' : `오류: ${e.message}` };
+    const prev = state.status || {};
+    state.status = {
+      running: false,
+      error: !cancelled,
+      text: cancelled ? '작업을 중지했습니다.' : `오류: ${e.message}`,
+      logs: prev.logs || [],
+      logClosed: !!prev.logClosed,
+    };
     if (!cancelled) toast('작업 중 오류가 발생했습니다. 위쪽 상태 표시를 확인하세요.');
+    autosave();
     return undefined;
   } finally {
     clearInterval(tick);
@@ -190,7 +274,10 @@ if (window.native) {
     const live = $('#live-progress');
     if (live && d.text) live.textContent = d.text;
     if (state.status?.running) {
-      if (d.text) state.status.text = d.text;
+      if (d.text) {
+        state.status.text = d.text;
+        pushStatusLog(d.text);
+      }
       if (d.progress != null) state.status.progress = d.progress;
       updateStatus();
     }
@@ -206,6 +293,22 @@ function autosave() {
 
 function copyText(text, msg) {
   navigator.clipboard.writeText(text).then(() => toast(msg)).catch(() => toast('복사하지 못했습니다.'));
+}
+
+function koSearchKeyword(p) {
+  if (!p) return '';
+  const stamp = /\s+\d{4}\s+\d{4}(?:_src.*)?$/;
+  const list = [p.searchKo, ...(p.product?.kw?.ko || []), p.cpKeyword, p.product?.name, p.name];
+  for (const raw of list) {
+    const s = String(raw || '').trim().replace(/_src\d+.*/, '').replace(stamp, '').trim();
+    if (!s || s === '새 프로젝트' || /^내영상/.test(s) || !/[가-힣]/.test(s)) continue;
+    return s;
+  }
+  return '';
+}
+
+function productTitleText(p) {
+  return String(p?.coupang?.[0]?.title || p?.product?.name || p?.upload?.title || '').trim();
 }
 
 function openUrl(url) {
@@ -511,7 +614,7 @@ function productFind() {
     </div>
     <div class="find-layout">
       <div>
-        <div class="notice" style="margin-bottom:12px"><b>쿠팡 URL</b> 또는 <b>검색어</b>를 넣고 해외 영상 비교를 누르면 쿠팡에서 상품을 찾은 뒤 <b>1688</b>과 <b>샤오홍슈</b>에서 영상을 모읍니다. 같은 영상은 한 번만, 화면에 중국어가 있는 건 빼고 최대 8개까지 고를 수 있습니다. 인포크에 올리려면 <button class="btn sm" data-act="openUrl" data-val="${INPOCK_ADMIN}">인포크 관리</button>를 누르세요.</div>
+        <div class="notice" style="margin-bottom:12px"><b>쿠팡 URL</b> 또는 <b>검색어</b>를 넣고 해외 영상 비교를 누르면 쿠팡에서 상품을 찾은 뒤 <b>1688</b>과 <b>샤오홍슈</b>에서 영상을 모읍니다. 같은 영상은 한 번만, 최대 8개까지 고를 수 있습니다. 원클릭 생성에서 중국어 자막 자리를 지운 뒤 한국어를 올립니다. 인포크에 올리려면 <button class="btn sm" data-act="openUrl" data-val="${INPOCK_ADMIN}">인포크 관리</button>를 누르세요.</div>
         ${pairList()}
         ${platform?.search ? `<div class="panel notice-panel"><b>${platform.label}</b> 검색 결과를 아래 목록으로 가져옵니다. ${['xhs', 'douyin', 'taobao', 'ali1688'].includes(platform.id) ? '검색어는 중국어로 바꿉니다. ' : ''}처음에는 열린 창에서 로그인하거나 확인을 마친 뒤 검색을 다시 누르세요.<div style="margin-top:10px"><button class="btn blue" data-act="openPlatformSearch" data-val="${platform.id}">${platform.label} 목록 가져오기</button></div></div>` : ''}
         ${state.platform === 'all' ? `<div class="row wrap" style="margin-bottom:12px">${PRESETS.platforms.filter((p) => p.search).map((p) => `<button class="btn sm" data-act="openPlatformSearch" data-val="${p.id}">${p.label} 목록${['xhs', 'douyin', 'taobao', 'ali1688'].includes(p.id) && state.findQ2 ? ` · ${esc(state.findQ2)}` : ''}</button>`).join('')}</div>` : ''}
@@ -584,7 +687,7 @@ function viewWork() {
         <div class="work-head">
           <div><span class="eyebrow">STEP ${String(state.workTab).padStart(2, '0')}</span><h2>${WORK_TABS[state.workTab - 1]}</h2></div>
           <div class="grow"></div>
-          <button class="btn green" data-act="oneClick">원클릭 영상 생성</button>
+          <button class="btn green" data-act="oneClick">${oneClickResumeAt(state.p) ? '이어서 생성' : '원클릭 영상 생성'}</button>
         </div>
         ${views[state.workTab]()}
       </section>
@@ -598,33 +701,38 @@ function tabPrepare() {
       <div class="row">
         <b>🎞️ 소스 영상</b>
         <input class="grow" placeholder="해외 영상 링크를 붙여넣고 Enter (샤오홍슈·도우인·틱톡·타오바오·1688)" data-enter="prepLink" />
+        <button class="btn green sm" data-act="addLocalVideos">내 PC 영상 올리기</button>
         <button class="btn blue sm" data-act="download" ${p.videos.some((v) => !v.done) ? '' : 'disabled'}>⬇ 다운로드</button>
         <button class="btn sm" data-act="folder" data-val="videos">📁 다운로드 폴더</button>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 300px;gap:18px">
-      <div class="panel">
+      <div class="panel" id="prep-panel">
         <div class="panel-title">추가된 영상 <span class="muted">${p.videos.length} / 8개</span><div class="grow"></div><button class="btn sm ghost" data-act="clearVideos">비우기</button></div>
-        ${p.videos.length ? `<div class="notice" style="margin-bottom:12px">미리보기로 확인한 뒤 <b>이 영상 사용</b>을 고르고, 위쪽 <b>원클릭 영상 생성</b>을 누르면 대본부터 완성 파일까지 만듭니다.</div>
+        <div class="ocd-drop" id="prep-drop" data-act="addLocalVideos" style="margin-bottom:14px">
+          <div class="cloud">⬆</div>
+          <div><b>영상을 여기로 끌어다 놓거나 클릭해서 선택</b><div class="muted small">MP4 · MOV · MKV · WebM · AVI · 최대 8개</div></div>
+        </div>
+        ${p.videos.length ? `<div class="notice" style="margin-bottom:12px">미리보기로 확인한 뒤 <b>이 영상 사용</b>을 고르고, 위쪽 <b>원클릭 영상 생성</b>을 누르면 중국어 자막 자리를 지운 뒤 그 자리에 한국어 자막을 올려 완성합니다.</div>
         <div class="grid5">${p.videos.map((v, i) => `
           <div class="card ${+p.pick === i ? 'picked' : ''}" data-act="pickVideo" data-i="${i}">
             ${thumb({ ...v, img: v.thumb ? fileUrl(v.thumb) : v.img }, 'r34', `<button class="x" data-act="removeVideo" data-i="${i}">✕</button>${+p.pick === i ? '<span class="badge">선택</span>' : ''}`)}
             <div class="card-body">
               <div class="small ellipsis" title="${esc(v.title)}">${esc(v.title)}</div>
               ${v.refTitle ? `<div class="muted small ellipsis" title="${esc(v.refTitle)}">분석 · 유튜브 ${esc(v.refTitle)}</div>` : ''}
-              <div class="card-meta"><span>${v.done ? '<span class="ok">● 완료</span>' : v.error ? `<span class="bad">● ${esc(v.error)}</span>` : '● 대기'}</span><span>${durText(v.dur)} ${mb(v.size)}</span></div>
+              <div class="card-meta"><span>${v.done ? '<span class="ok">● 완료</span>' : v.error ? `<span class="bad">● ${esc(v.error)}</span>` : '● 대기'}</span><span>${v.local ? '내 PC · ' : ''}${durText(v.dur)} ${mb(v.size)}</span></div>
               ${v.done ? `<div class="card-actions" style="margin-top:6px">
                 <button class="btn sm" data-act="playVideo" data-i="${i}">▶ 미리보기</button>
                 <button class="btn ${+p.pick === i ? 'green' : 'blue'} sm" data-act="pickVideo" data-i="${i}">${+p.pick === i ? '선택됨' : '이 영상 사용'}</button>
               </div>` : ''}
             </div>
-          </div>`).join('')}</div>` : '<div class="empty">트렌드 &gt; 제품찾기에서 영상을 추가하거나 위에 링크를 붙여넣으세요.</div>'}
+          </div>`).join('')}</div>` : '<div class="muted small">아직 올린 영상이 없습니다. 위 영역으로 끌어다 놓으세요.</div>'}
       </div>
       <div class="panel" style="align-self:start">
         <div class="panel-title">소스 영상 분석</div>
         <button class="btn blue" style="width:100%" data-act="analyzeSources" ${p.videos.some((v) => v.done) ? '' : 'disabled'}>소스 영상 분석</button>
         <div style="margin-top:14px" class="small">
-          <div class="muted">분석 내용</div><div class="wrap-text">장면을 나눈 뒤 원본 음성을 빼고, 자막이 있던 자리를 흐리게 지웁니다. 새 대본과 음성은 그 위에 올립니다.</div>
+          <div class="muted">분석 내용</div><div class="wrap-text">장면을 나눈 뒤 원본 음성을 빼고, 중국어 자막이 있던 자리를 지운 다음 그 자리에 한국어 자막을 덮습니다.</div>
         </div>
         <div style="margin-top:14px">
           ${p.analyzed ? p.videos.map((v, i) => `<div class="info-box small wrap-text"><b>소스 ${i + 1}</b> · ${v.scenes?.length || 0}개 장면${v.cleaned ? '<br><span class="ok">원본 음성을 뺐고, 자막 자리를 지웠습니다.</span>' : ''}${v.summary && v.summary !== `${v.scenes?.length || 0}개 장면` ? `<br><span class="muted">${esc(v.summary)}</span>` : ''}</div>`).join('') + `<button class="btn blue" style="width:100%;margin-top:12px" data-act="workTab" data-val="2">다음 단계 · 대본 만들기</button>` : '<div class="muted small">분석을 누르면 장면이 아래에 나옵니다.</div>'}
@@ -718,17 +826,18 @@ function tabScript() {
             <button class="btn sm ghost" data-act="addLine" style="margin-top:4px">＋ 문장 추가</button>
           </div>
           <div class="tabs" style="margin-top:14px">
-            ${[['gemini', 'Gemini'], ['sapi', 'Windows 기본 음성 (무료)'], ['openai', 'OpenAI (별도 과금)'], ['eleven', 'ElevenLabs (별도 과금)'], ['typecast', 'Typecast (별도 과금)']].map(([id, l]) => `<button class="tab ${prov === id ? 'active' : ''}" data-act="ttsTab" data-val="${id}">${l}</button>`).join('')}
+            ${[['gemini', 'Gemini'], ['typecast', 'Typecast'], ['sapi', 'Windows 기본 음성 (무료)'], ['openai', 'OpenAI (별도 과금)'], ['eleven', 'ElevenLabs (별도 과금)']].map(([id, l]) => `<button class="tab ${prov === id ? 'active' : ''}" data-act="ttsTab" data-val="${id}">${l}</button>`).join('')}
             <div class="grow"></div>
             ${prov === 'eleven' && state.credits ? `<span class="credit">크레딧: ${fmt(state.credits.limit - state.credits.used)} / ${fmt(state.credits.limit)}</span>` : ''}
           </div>
-          ${prov === 'gemini' ? '<div class="muted small" style="margin-bottom:8px">설정에 넣은 Gemini 키로 음성을 만듭니다. 분석·대본과 같은 키입니다.</div>' : ''}
+          ${prov === 'gemini' ? '<div class="muted small" style="margin-bottom:8px">설정에 넣은 Gemini 키로 음성을 만듭니다. 분석·대본과 같은 키이고, 원클릭 기본입니다.</div>' : ''}
+          ${prov === 'typecast' ? '<div class="muted small" style="margin-bottom:8px">설정에 넣은 Typecast 크레딧으로 한국어 음성을 만듭니다. 선택입니다.</div>' : ''}
           ${voices?.error ? `<div class="notice">${esc(voices.error)}</div>` : ''}
           <table class="tts-table">
             <tr><th>화자</th><th>목소리</th>${prov === 'eleven' || prov === 'openai' || prov === 'gemini' ? '<th>모델</th>' : prov === 'typecast' ? '<th>감정</th>' : ''}<th>읽는속도</th><th>듣기</th></tr>
             <tr>
               <td><span class="spk">N</span></td>
-              <td><select data-model="tts.voice" style="max-width:240px"><option value="">${voices === undefined || voices === 'loading' ? '불러오는 중...' : prov === 'sapi' ? '자동 (한국어 음성)' : prov === 'gemini' ? 'Kore (추천)' : prov === 'openai' ? 'Marin (추천)' : '목소리 선택'}</option>${voiceOptions}</select></td>
+              <td><select data-model="tts.voice" style="max-width:240px"><option value="">${voices === undefined || voices === 'loading' ? '불러오는 중...' : prov === 'typecast' ? '자동 (한국어)' : prov === 'sapi' ? '자동 (한국어 음성)' : prov === 'gemini' ? 'Kore (추천)' : prov === 'openai' ? 'Marin (추천)' : '목소리 선택'}</option>${voiceOptions}</select></td>
               ${prov === 'gemini' ? `<td><select data-model="tts.model"><option value="gemini-3.8-flash-lite-tts" ${p.tts.model !== 'gemini-3.8-flash-tts' ? 'selected' : ''}>Flash-Lite TTS</option><option value="gemini-3.8-flash-tts" ${p.tts.model === 'gemini-3.8-flash-tts' ? 'selected' : ''}>Flash TTS</option></select></td>` : ''}
               ${prov === 'openai' ? `<td><select data-model="tts.model"><option value="gpt-4o-mini-tts" ${p.tts.model !== 'tts-1' && p.tts.model !== 'tts-1-hd' ? 'selected' : ''}>GPT-4o mini TTS</option><option value="tts-1" ${p.tts.model === 'tts-1' ? 'selected' : ''}>TTS-1 (저렴)</option><option value="tts-1-hd" ${p.tts.model === 'tts-1-hd' ? 'selected' : ''}>TTS-1 HD</option></select></td>` : ''}
               ${prov === 'eleven' ? `<td><select data-model="tts.model"><option value="eleven_multilingual_v2" ${p.tts.model === 'eleven_multilingual_v2' ? 'selected' : ''}>다국어 v2</option><option value="eleven_turbo_v2_5" ${p.tts.model === 'eleven_turbo_v2_5' ? 'selected' : ''}>Turbo v2.5</option><option value="eleven_flash_v2_5" ${p.tts.model === 'eleven_flash_v2_5' ? 'selected' : ''}>Flash v2.5</option></select></td>` : ''}
@@ -870,6 +979,7 @@ function tabEdit() {
   ensureTimeline();
   const p = state.p;
   const e = p.edit;
+  ensureHeadStat(e);
   const subs = p.subtitles;
   const tpl = PRESETS.templates[e.template] || PRESETS.templates[0];
   const cur = currentSub();
@@ -879,7 +989,8 @@ function tabEdit() {
   const scale = 270 / 1080;
   const grade = { sharp: 'contrast(1.12) saturate(1.2)', warm: 'sepia(0.3) saturate(1.3)', cool: 'hue-rotate(16deg) saturate(0.85)', vintage: 'sepia(0.55) contrast(0.95)', mono: 'grayscale(1)' }[e.filter] || '';
   const fx = e.effect && e.effect !== 'none' ? (e.effect === 'auto' ? 'zoom' : e.effect) : '';
-  const subStyle = `font-family:'${esc(e.font)}';font-size:${Math.round(e.size * scale * 1.1)}px;${e.italic ? 'font-style:italic;' : ''}${e.bg ? 'background:rgba(0,0,0,.6);padding:2px 6px;' : ''}${e.border || e.bg ? '' : 'text-shadow:none;'}${e.shadow ? 'filter:drop-shadow(0 3px 3px #000);' : ''}`;
+  const subY = Number.isFinite(Number(e.subY)) ? Number(e.subY) : subYFromBand(captionBandOf(p));
+  const subStyle = `font-family:'${esc(e.font)}';font-size:${Math.round(e.size * scale * 1.1)}px;font-weight:800;color:#fff;top:${((subY / 1920) * 100).toFixed(2)}%;bottom:auto;transform:translateY(-50%);${e.italic ? 'font-style:italic;' : ''}${(e.border || e.bg) ? '-webkit-text-stroke:1.6px #000;paint-order:stroke fill;text-shadow:none;' : 'text-shadow:none;-webkit-text-stroke:0;'}`;
 
   const right = {
     text: `
@@ -927,7 +1038,7 @@ function tabEdit() {
       ${boxEditor(e.bottomBox, 'bottomBox', '하단 박스')}
       <div class="field-label" style="margin-top:14px">채널명 (윗줄)</div><input style="width:100%;margin-bottom:8px" value="${esc(e.headTop)}" data-model="edit.headTop" data-live />
       <div class="field-label">헤드라인 (아랫줄)</div><input style="width:100%;margin-bottom:8px" value="${esc(e.headTitle)}" data-model="edit.headTitle" data-live />
-      <div class="field-label">조회수 · 댓글</div><input style="width:100%;margin-bottom:12px" value="${esc(e.headStat || '')}" data-model="edit.headStat" data-live placeholder="조회수 235만 | 댓글 697개" />
+      <div class="field-label">조회수 · 댓글</div><input style="width:100%;margin-bottom:12px" value="${esc(e.headStat || '')}" data-model="edit.headStat" data-live placeholder="조회수 200~500만 | 댓글 300~900개" />
       <div class="row" style="margin-bottom:10px"><span class="small">상단 제목</span><button class="switch ${e.header ? 'on' : ''}" data-act="toggleEdit" data-val="header"></button></div>
       ${state.userTemplates.length ? `<div class="group-label">사용자 저장</div><div class="tpl-grid" style="margin-bottom:12px">${state.userTemplates.map((u, i) => `
         <div class="tpl ${e.template === u.template && e.headTitle === u.headTitle ? 'active' : ''}" data-act="tplLoad" data-i="${i}">
@@ -1011,7 +1122,7 @@ function tabEdit() {
               <video id="pv-video" playsinline ${p.prepared?.voiceFile ? 'muted' : ''} style="${grade ? `filter:${grade}` : ''}"></video>
             </div>
             <div class="frame-deco"></div>
-            ${tpl.look === 'reel' && e.header ? `<div class="reel-chrome"><div class="reel-bar"><span>≡</span><b>${esc((e.headTop || '꿀템나라').replace(/\s+/g, ''))}</b><span>⌕</span></div><div class="reel-title">${esc(e.headTitle || '일본 천재가 개발해 떼돈 번 제품')}</div><div class="reel-stat">${esc(e.headStat || '조회수 235만 | 댓글 697개')}</div></div>` : ''}
+            ${tpl.look === 'reel' && e.header ? `<div class="reel-chrome"><div class="reel-bar"><span>≡</span><b>${esc((e.headTop || '꿀템나라').replace(/\s+/g, ''))}</b><span>⌕</span></div><div class="reel-title">${esc(e.headTitle || '일본 천재가 개발해 떼돈 번 제품')}</div><div class="reel-stat">${esc(e.headStat)}</div></div>` : ''}
             ${tpl.frame === 'phone' ? `<div class="phone-bar" style="background:${tpl.bar || tpl.color};color:${tpl.look === 'phone' && tpl.bar === '#1c1f27' ? '#7DF9FD' : '#1d1b18'}"><span>☰</span><b>${esc(e.headTop)}</b><span>⌕</span></div>` : ''}
             ${e.header && (e.headTop || e.headTitle) && tpl.frame !== 'phone' && tpl.look !== 'reel' ? `<div class="tpl-head"><div class="k">${esc(e.headTop)}</div><div class="t" style="color:${tpl.color}">${esc(e.headTitle)}</div></div>` : ''}
             ${e.header && e.headTitle && tpl.frame === 'phone' ? `<div class="phone-title">${esc(e.headTitle)}</div>` : ''}
@@ -1072,6 +1183,12 @@ function tabCoupang() {
             <button class="btn blue" data-act="findCoupang">검색</button>
           </div>
           <div>${kws.map((k) => `<span class="chip ${p.cpKeyword === k ? 'active' : ''}" data-act="cpKeyword" data-val="${esc(k)}">${esc(k)}</span>`).join('')}</div>
+          <div class="row" style="margin-top:8px;gap:8px">
+            <span class="muted small">검색 키워드</span><b class="ellipsis" title="${esc(koSearchKeyword(p))}">${esc(koSearchKeyword(p) || '없음')}</b>
+            <button class="btn sm" data-act="copySearchKo" ${koSearchKeyword(p) ? '' : 'disabled'}>키워드 복사</button>
+            <span class="muted small">제목</span><b class="ellipsis grow" title="${esc(productTitleText(p))}">${esc(productTitleText(p) || '없음')}</b>
+            <button class="btn sm" data-act="copyProductTitle" ${productTitleText(p) ? '' : 'disabled'}>제목 복사</button>
+          </div>
           <div class="row" style="margin-top:10px">
             <input class="grow" placeholder="쿠팡 상품 링크를 붙여넣고 Enter (${state.aiStatus.coupang ? '수익 링크로 자동 변환' : '그대로 저장'})" data-enter="addCoupang" />
           </div>
@@ -1086,7 +1203,7 @@ function tabCoupang() {
       <div class="cp-card">
         ${thumb({ img: c.img, emoji: '🛍️', hue: 20 + i * 50 }, 'sq', `<button class="x" data-act="removeCoupang" data-i="${i}">✕</button>`)}
         <div class="t">${esc(c.title)}</div>${c.price ? `<div class="price">${fmt(c.price)}원${c.rocket ? ' · 🚀로켓' : ''}</div>` : ''}${c.partner ? '<div class="muted small">내 파트너스 링크</div>' : ''}<div class="u">${esc(c.url)}</div>
-        <div class="row" style="margin-top:8px"><button class="btn sm grow" data-act="openUrl" data-val="${esc(c.url)}">열기</button><button class="btn green sm grow" data-act="copyLink" data-i="${i}">복사</button></div>
+        <div class="row" style="margin-top:8px"><button class="btn sm grow" data-act="openUrl" data-val="${esc(c.url)}">열기</button><button class="btn green sm" data-act="copyLink" data-i="${i}">링크 복사</button><button class="btn sm" data-act="saveCoupangThumb" data-i="${i}" ${c.img ? '' : 'disabled'}>썸네일 저장</button></div>
       </div>`).join('')}</div>` : '<div class="panel muted" style="display:inline-block;padding:14px 20px">아직 수집된 쿠팡 후보가 없습니다.</div>'}`;
 }
 
@@ -1096,7 +1213,7 @@ function tabUpload() {
   const s = state.settings;
   const plats = [
     ['youtube', '▶ YouTube Shorts', s.ytRefresh ? `연결됨 · ${s.ytChannel || ''}` : '연결 안 됨 (설정에서 연결)'],
-    ['instagram', '📷 Instagram Reels', s.igToken && s.igUserId ? '토큰 입력됨' : '연결 안 됨 (설정에서 토큰 입력)'],
+    ['instagram', '📷 Instagram Reels', (s.sns || {}).instagram?.name ? `연결됨 · ${(s.sns || {}).instagram.name}` : '연결 안 됨 (원클릭배포에서 연결)'],
     ['tiktok', '🎵 TikTok', s.tiktokToken ? `토큰 입력됨 · ${s.tiktokPrivacy || 'SELF_ONLY'}` : '연결 안 됨 (설정에서 토큰 입력)'],
   ];
   return `
@@ -1205,7 +1322,6 @@ function doneModal(file) {
       <h3>내보내기 완료</h3>
       <div class="muted">${esc(name)} 파일이 저장되었습니다.</div>
       ${state.p.edit.thumbLead && state.p.thumbnail ? '<div class="notice">영상 맨 앞 5프레임에 썸네일을 넣었습니다.</div>' : ''}
-      ${state.share?.qr ? `<img class="qr" src="${state.share.qr}" alt="QR" /><div class="muted small">같은 와이파이의 휴대폰으로 스캔하면 영상을 받습니다.</div><div class="small ellipsis">${esc(state.share.url || '')}</div>` : '<div class="muted small">주소 연결을 준비하지 못했습니다. 폴더에서 바로 여세요.</div>'}
       ${state.p.coupang?.[0]?.url ? `<div class="notice" style="margin-top:10px">파트너스 링크<br><span class="small wrap-text">${esc(state.p.coupang[0].url)}</span></div>` : ''}
       <div class="row" style="margin-top:12px">
         <button class="btn" data-act="showItem" data-val="${esc(file)}">폴더 열기</button>
@@ -1247,16 +1363,28 @@ function sfxModal() {
 
 /* ---------- other views ---------- */
 function viewProjects() {
+  const done = state.finished || [];
   return `
-    <div class="row"><h2>프로젝트</h2><div class="grow"></div><button class="btn" data-act="folder" data-val="__root">📁 전체 폴더</button><button class="btn blue" data-act="newProject">＋ 새 프로젝트</button></div>
+    <div class="row"><h2>완성 영상</h2><span class="muted small">${done.length}개</span><div class="grow"></div><button class="btn" data-act="openFinishedDir">📁 one_mp4 폴더</button></div>
+    <div class="muted small" style="margin:-6px 0 12px">one_mp4에 있는 완성 영상입니다. 텔레그램을 누르면 영상과 함께 원클릭 배포의 제목·설명이 봇 대화로 갑니다.</div>
+    ${done.length ? `<div class="grid5">${done.map((v, i) => `
+      <div class="card">
+        <div data-act="finishedPreview" data-i="${i}">${thumb({ hue: 12 + i * 48, emoji: '▶' }, 'r34')}</div>
+        <div class="card-body">
+          <div class="card-title" style="height:auto"><b>${esc(v.name)}</b></div>
+          <div class="muted small">${mb(v.size)} · ${v.mtime ? new Date(v.mtime).toLocaleString('ko-KR') : ''}</div>
+          <div class="card-actions"><button class="btn sm" data-act="finishedPreview" data-i="${i}">미리보기</button><button class="btn blue sm" data-act="finishedTelegram" data-i="${i}">텔레그램</button></div>
+        </div>
+      </div>`).join('')}</div>` : '<div class="empty">one_mp4 폴더에 완성 영상이 없습니다.</div>'}
+    <div class="row" style="margin-top:28px"><h2>작업 중인 프로젝트</h2><div class="grow"></div><button class="btn" data-act="folder" data-val="__root">📁 전체 폴더</button><button class="btn blue" data-act="newProject">＋ 새 프로젝트</button></div>
     ${state.projects.length ? `<div class="grid5">${state.projects.map((p, i) => `
       <div class="card">
-        ${thumb({ img: p.thumb ? fileUrl(p.thumb) : '', hue: 40 + i * 70, emoji: '📁' }, 'r34')}
+        <div ${p.preview ? `data-act="projectPreview" data-i="${i}"` : ''}>${thumb({ img: p.thumb ? fileUrl(p.thumb) : '', hue: 40 + i * 70, emoji: p.preview ? '▶' : '📁' }, 'r34')}</div>
         <div class="card-body">
           <div class="card-title" style="height:auto"><b>${esc(p.name)}</b></div>
           <div class="muted small">${p.updated ? new Date(p.updated).toLocaleString('ko-KR') : ''}</div>
           <div class="muted small">단계 ${p.step}. ${WORK_TABS[(p.step || 1) - 1]}</div>
-          <div class="card-actions"><button class="btn blue sm" data-act="openProject" data-val="${esc(p.name)}">열기</button></div>
+          <div class="card-actions"><button class="btn sm" data-act="projectPreview" data-i="${i}" ${p.preview ? '' : 'disabled'}>미리보기</button><button class="btn blue sm" data-act="openProject" data-val="${esc(p.name)}">열기</button></div>
         </div>
       </div>`).join('')}</div>` : '<div class="empty">저장된 프로젝트가 없습니다. 작업실에서 저장하면 여기에 표시됩니다.</div>'}`;
 }
@@ -1330,15 +1458,24 @@ function viewSettings() {
       <div class="panel">
         <div class="panel-title">📤 업로드 계정</div>
         <div class="form-grid">
-          ${field('ytClientId', 'YouTube OAuth 클라이언트 ID', 'Google Cloud > 사용자 인증 정보 (데스크톱 앱)', 'text')}
+          ${field('ytClientId', 'YouTube OAuth 클라이언트 ID', 'xxx.apps.googleusercontent.com (데스크톱 앱)', 'text')}
           ${field('ytClientSecret', 'YouTube OAuth 보안 비밀')}
-          <span>YouTube 계정</span><div class="row"><span class="muted">${s.ytRefresh ? `연결됨 · ${esc(s.ytChannel || '')}` : '연결 안 됨'}</span><div class="grow"></div><button class="btn blue sm" data-act="youtubeConnect">${s.ytRefresh ? '다시 연결' : '계정 연결'}</button></div>
-          ${field('igUserId', 'Instagram 비즈니스 계정 ID', '', 'text')}
-          ${field('igToken', 'Instagram 액세스 토큰')}
-          ${field('tiktokToken', 'TikTok 액세스 토큰')}
+          <span>YouTube 계정</span><div class="row"><span class="muted">${s.ytRefresh ? `연결됨 · ${channelName('youtube', s.ytChannel || '')}` : '연결 안 됨'}</span><div class="grow"></div><button class="btn blue sm" data-act="youtubeConnect">${s.ytRefresh ? '다시 연결' : '계정 연결'}</button></div>
+          ${field('igClientId', 'Instagram 앱 ID', 'Instagram 로그인 설정의 앱 ID', 'text')}
+          ${field('igClientSecret', 'Instagram 앱 시크릿')}
+          ${field('tiktokClientKey', 'TikTok Client Key', 'developers.tiktok.com 앱의 Client key', 'text')}
+          ${field('tiktokClientSecret', 'TikTok Client Secret')}
           <span>TikTok 공개 범위</span><select data-setting="tiktokPrivacy">${['SELF_ONLY', 'PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR'].map((v) => `<option ${s.tiktokPrivacy === v ? 'selected' : ''}>${v}</option>`).join('')}</select>
         </div>
-        <div class="muted small wrap-text" style="margin-top:10px">틱톡은 심사 전 앱이면 SELF_ONLY(나만 보기)만 가능합니다. 인스타그램은 비즈니스/크리에이터 계정과 Meta 앱의 instagram_content_publish 권한이 필요합니다.</div>
+        <div class="muted small wrap-text" style="margin-top:10px">틱톡은 심사 전 앱이면 SELF_ONLY(나만 보기)만 가능합니다. 인스타그램은 페이스북 페이지 없이 인스타 로그인으로 연결합니다. 개발 모드 앱은 그 앱에 추가된 프로페셔널 계정만 로그인됩니다.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">✈ 텔레그램으로 폰에 보내기</div>
+        <div class="form-grid">
+          ${field('tgToken', '봇 토큰', 'BotFather가 준 토큰')}
+          <span>연결 상태</span><div class="row"><span class="muted">${s.tgChat ? `연결됨 · @${esc(s.tgBot || '')}` : '연결 안 됨'}</span><div class="grow"></div><button class="btn blue sm" data-act="telegramConnect">연결</button></div>
+        </div>
+        <div class="muted small wrap-text" style="margin-top:10px">텔레그램에서 @BotFather 에게 /newbot 을 보내 봇을 만들고, 받은 토큰을 넣은 뒤 연결을 누르세요. 열린 대화에서 시작을 누른 다음 다시 연결하면 완성 영상의 텔레그램 버튼으로 보낼 수 있습니다. 50MB 이하 영상만 됩니다.</div>
       </div>
       <div class="panel">
         <div class="panel-title">🧰 필수 도구 · 저장 위치</div>
@@ -1380,20 +1517,20 @@ const SNS = [
   {
     key: 'youtube', name: 'YouTube', glyph: '▶', bg: '#ff0033', oauth: true, link: 'https://console.cloud.google.com/apis/credentials',
     fields: [['ytClientId', 'OAuth 클라이언트 ID', 'text'], ['ytClientSecret', 'OAuth 보안 비밀']],
-    guide: ['Google Cloud에서 프로젝트를 만들고 YouTube Data API v3를 사용 설정합니다.', '사용자 인증 정보 → OAuth 클라이언트 ID → 애플리케이션 유형 "데스크톱 앱"으로 만듭니다.', 'ID와 보안 비밀을 넣고 "연결하기"를 누르면 브라우저에서 구글 로그인 창이 열립니다.'],
+    guide: ['Google Cloud에서 프로젝트를 만들고 YouTube Data API v3를 사용 설정합니다.', '사용자 인증 정보 → OAuth 클라이언트 ID → 애플리케이션 유형은 반드시 "데스크톱 앱"으로 만듭니다. (웹 앱이면 리디렉션 URI에 http://127.0.0.1:53681 을 추가하세요.)', '클라이언트 ID는 xxx.apps.googleusercontent.com 형식입니다. Data API 키(AIza…)가 아닙니다.', 'ID와 보안 비밀을 넣고 저장하면 브라우저에서 구글 로그인 창이 열립니다. 확인 화면이 뜨면 고급 → 쇼핑렌즈로 이동을 누르세요.'],
     note: '쇼츠로 올라가며, 예약 시 유튜브 예약 공개 기능을 씁니다.',
   },
   {
-    key: 'tiktok', name: 'TikTok', glyph: '♪', bg: '#111', link: 'https://developers.tiktok.com/',
-    fields: [['tiktokToken', '액세스 토큰'], ['tiktokPrivacy', '공개 범위', 'select', ['SELF_ONLY', 'PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR']]],
-    guide: ['TikTok for Developers에서 앱을 만들고 Content Posting API를 추가합니다.', 'video.upload, video.publish, user.info.basic 권한으로 사용자 액세스 토큰을 발급합니다.'],
-    note: '심사 전 앱은 SELF_ONLY(나만 보기)로만 게시됩니다.',
+    key: 'tiktok', name: 'TikTok', glyph: '♪', bg: '#111', oauth: true, link: 'https://developers.tiktok.com/apps',
+    fields: [['tiktokClientKey', 'Client Key', 'text'], ['tiktokClientSecret', 'Client Secret'], ['tiktokPrivacy', '공개 범위', 'select', ['SELF_ONLY', 'PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR']]],
+    guide: ['TikTok for Developers에서 앱을 만들고 Login Kit와 Content Posting API를 추가합니다.', 'Login Kit 리디렉션 URI에 http://127.0.0.1:53683/callback/ 을 그대로 넣습니다.', '권한은 user.info.basic, user.info.profile, video.upload, video.publish 를 켭니다.', 'Client Key와 Client Secret을 넣고 저장하면 브라우저에서 틱톡 로그인 창이 열립니다.'],
+    note: '심사 전 앱은 개발자로 등록된 계정만 연결되고, 게시가 SELF_ONLY(나만 보기)로 제한될 수 있습니다. 채널명을 누르면 틱톡 채널이 열립니다.',
   },
   {
-    key: 'instagram', name: 'Instagram', glyph: '◎', bg: 'linear-gradient(45deg,#f9a825,#e91e63 55%,#7b1fa2)', link: 'https://developers.facebook.com/tools/explorer/',
-    fields: [['igUserId', '비즈니스 계정 ID', 'text'], ['igToken', '액세스 토큰']],
-    guide: ['인스타그램을 비즈니스/크리에이터 계정으로 바꾸고 페이스북 페이지에 연결합니다.', 'Meta 개발자 앱에서 instagram_basic, instagram_content_publish 권한으로 토큰을 발급합니다.', 'Graph API 탐색기에서 me/accounts?fields=instagram_business_account 로 계정 ID를 확인합니다.'],
-    note: '릴스로 게시됩니다. "내 피드에서 제외"를 켜면 프로필 피드에는 보이지 않습니다.',
+    key: 'instagram', name: 'Instagram', glyph: '◎', bg: 'linear-gradient(45deg,#f9a825,#e91e63 55%,#7b1fa2)', oauth: true, link: 'https://developers.facebook.com/apps/',
+    fields: [['igClientId', 'Instagram 앱 ID', 'text'], ['igClientSecret', 'Instagram 앱 시크릿']],
+    guide: ['Meta 개발자 앱에 Instagram 로그인(Instagram API with Instagram Login)을 추가합니다. 페이스북 페이지는 연결하지 않습니다.', 'Business login settings의 OAuth 리디렉션 URI에 http://127.0.0.1:53684/callback/ 을 그대로 넣습니다.', '권한은 instagram_business_basic, instagram_business_content_publish 입니다. 개발 모드에서는 앱에 추가한 인스타 프로페셔널 계정만 로그인됩니다.', 'Instagram 앱 ID와 앱 시크릿을 넣고 저장하면 브라우저에서 인스타 로그인 창이 열립니다.'],
+    note: '릴스로 게시됩니다. Meta가 영상을 가져가므로 업로드 중에만 임시 공개 주소를 엽니다. 토큰은 약 60일입니다. 채널명을 누르면 인스타 프로필이 열립니다.',
   },
   {
     key: 'threads', name: 'Threads', glyph: '@', bg: '#111', link: 'https://developers.facebook.com/docs/threads',
@@ -1416,6 +1553,12 @@ const SNS = [
 ];
 const snsOf = (k) => SNS.find((s) => s.key === k);
 const snsConn = (k) => (state.settings.sns || {})[k];
+const channelUrl = (key) => snsConn(key)?.url || (key === 'youtube' ? state.settings.ytChannelUrl : '') || '';
+const channelName = (key, name) => {
+  const url = channelUrl(key);
+  if (key !== 'youtube' && !url) return esc(name);
+  return `<button type="button" class="ch-link" data-act="openChannel" data-val="${esc(url)}" title="채널 열기">${esc(name)}</button>`;
+};
 const snsHasCreds = (s) => s.key === 'youtube' ? !!state.settings.ytRefresh : s.key === 'x' ? !!state.settings.xRefresh : s.fields.filter(([, , t]) => t !== 'select').some(([f]) => state.settings[f]);
 const snsIcon = (s, size = 34) => `<span class="sns-ic" style="background:${s.bg};width:${size}px;height:${size}px;font-size:${Math.round(size * 0.44)}px">${s.glyph}</span>`;
 const blastTargets = () => SNS.filter((s) => state.blast.targets[s.key] && snsConn(s.key));
@@ -1514,7 +1657,7 @@ function viewBlast() {
                 return `
                 <div class="ch-row ${on ? 'on' : ''} ${c ? '' : 'off'}">
                   ${snsIcon(s, 36)}
-                  <div class="grow" style="min-width:0"><b>${s.name}</b><div class="muted small ellipsis">${c ? esc(c.name) : s.note}</div></div>
+                  <div class="grow" style="min-width:0"><b>${s.name}</b><div class="muted small ellipsis">${c ? channelName(s.key, c.name) : esc(s.note)}</div></div>
                   ${status(s)}
                   <button class="btn sm" data-act="snsOpen" data-val="${s.key}">${c ? '설정' : '연결'}</button>
                   ${c ? `<button class="switch ${on ? 'on' : ''}" data-act="snsToggle" data-val="${s.key}" title="배포 대상 켜기/끄기"></button>` : '<span class="switch ghost"></span>'}
@@ -1589,7 +1732,7 @@ function snsModal(key) {
   return `
     <div class="modal sns-modal">
       <button class="close" data-act="closeModal">✕</button>
-      <div class="row" style="margin-bottom:6px">${snsIcon(s, 40)}<div><h3 style="margin:0">${s.name} 연결</h3><div class="muted small">${c ? `연결됨 · ${esc(c.name)}` : '연결 안 됨'}</div></div></div>
+      <div class="row" style="margin-bottom:6px">${snsIcon(s, 40)}<div><h3 style="margin:0">${s.name} 연결</h3><div class="muted small">${c ? `연결됨 · ${channelName(key, c.name)}` : '연결 안 됨'}</div></div></div>
       <ol class="guide">${s.guide.map((g) => `<li>${esc(g)}</li>`).join('')}</ol>
       <button class="btn sm" data-act="openUrl" data-val="${s.link}">개발자 페이지 열기 ↗</button>
       <div class="form-grid" style="grid-template-columns:150px 1fr;margin-top:14px">${s.fields.map(input).join('')}</div>
@@ -1606,7 +1749,7 @@ function snsListModal() {
       <h3>채널 관리</h3>
       ${SNS.map((s) => {
         const c = snsConn(s.key);
-        return `<div class="list-item">${snsIcon(s, 26)}<span class="t">${s.name}</span><span class="small ${c ? 'ok' : 'muted'}">${c ? esc(c.name) : snsHasCreds(s) ? '확인 필요' : '연결 안 됨'}</span><button class="btn sm" data-act="snsOpen" data-val="${s.key}">설정</button></div>`;
+        return `<div class="list-item">${snsIcon(s, 26)}<span class="t">${s.name}</span><span class="small ${c ? 'ok' : 'muted'}">${c ? channelName(s.key, c.name) : snsHasCreds(s) ? '확인 필요' : '연결 안 됨'}</span><button class="btn sm" data-act="snsOpen" data-val="${s.key}">설정</button></div>`;
       }).join('')}
     </div>`;
 }
@@ -2106,6 +2249,21 @@ function koSeeds(keyword, title) {
   return out;
 }
 
+function activeZh(keyword) {
+  const cur = String(state.findQ2 || '').replace(/\s+/g, ' ').trim();
+  if (!hasHan(cur)) return '';
+  if (state.zhManual) return cur;
+  const src = String(keyword || '').trim();
+  if (src && state.zhSource === src) return cur;
+  return '';
+}
+
+function rememberZh(keyword, zh, manual = false) {
+  state.findQ2 = zh || '';
+  state.zhSource = String(keyword || '').trim();
+  state.zhManual = !!manual && hasHan(zh);
+}
+
 async function zhQueriesFor(sources) {
   const out = [];
   for (const src of sources) {
@@ -2124,25 +2282,20 @@ async function zhQueriesFor(sources) {
 
 async function ensureZh() {
   const src = (state.findQ1 || '').trim();
-  const cur = (state.findQ2 || '').trim();
-  if (!src) return cur;
+  const cur = activeZh(src);
+  if (!src) return String(state.findQ2 || '').trim();
   if (hasHan(src) && !/[가-힣A-Za-z]/.test(src)) {
-    state.findQ2 = src;
-    state.zhSource = src;
+    rememberZh(src, src);
     return src;
   }
-  if (cur && hasHan(cur) && (!state.zhSource || state.zhSource === src)) {
-    state.zhSource = src;
-    return cur;
-  }
-  const zhList = await zhQueriesFor([cur, ...koSeeds(src, src)]);
+  if (cur) return cur;
+  state.findQ2 = '';
+  const zhList = await zhQueriesFor(koSeeds(src, src));
   const zh = zhList[0] || '';
   if (hasHan(zh)) {
-    state.findQ2 = zh;
-    state.zhSource = src;
+    rememberZh(src, zh);
     return zh;
   }
-  if (hasHan(cur)) return cur;
   return '';
 }
 const SOCIAL = ['tiktok', 'instagram', 'xhs', 'douyin', 'taobao', 'ali1688'];
@@ -2229,7 +2382,10 @@ async function socialForProducts(products, seq, keyword, platforms) {
       try {
         const fromKw = String(await api('translateZh', keyword || state.findQ1 || query) || '').trim();
         if (hasHan(fromKw)) zh = fromKw;
-        else if (hasHan(state.findQ2)) zh = state.findQ2;
+        else {
+          const override = activeZh(keyword || state.findQ1 || query);
+          if (override) zh = override;
+        }
       } catch (e) {
         if (/CANCELLED/.test(String(e.message))) throw e;
       }
@@ -2245,7 +2401,7 @@ async function socialForProducts(products, seq, keyword, platforms) {
         if (plat === 'taobao') continue;
         if (plat === 'ali1688') {
           const zhList = await zhQueriesFor([zh, ...koSeeds(query, product.title), keyword]);
-          const rows = await videosFrom1688Keyword(zhList, seq, 4);
+          const rows = await videosFrom1688Keyword(zhList, seq, 4, keyword);
           let got1688 = 0;
           for (const cand of rows) {
             const id = videoIdOf(cand.url);
@@ -2284,13 +2440,6 @@ async function socialForProducts(products, seq, keyword, platforms) {
         state.findNote = `제품만 있는 원본 고르는 중 · ${(cand.title || '').slice(0, 16)}`;
         render();
         seen.add(videoIdOf(cand.url));
-        let verdict = { ok: true, person: false };
-        try {
-          verdict = await api('judgeSource', { img: cand.img });
-        } catch (e) {
-          if (/CANCELLED/.test(String(e.message))) throw e;
-        }
-        if (verdict.chinese) continue;
         kept.push({
           ...cand,
           platform: plat,
@@ -2354,14 +2503,6 @@ async function keepCoupangVideos(videos, keyword, seq) {
     const verified = await api('verifyCoupang', { title: v.title || '', keyword });
     if (seq !== searchSeq) return null;
     if (verified?.ok && verified.items?.length) {
-      state.findNote = `사람·중국어 자막 확인 중 · ${(v.title || '').slice(0, 16)}`;
-      render();
-      try {
-        const j = await api('judgeSource', { img: v.img });
-        if (j.chinese) continue;
-      } catch (e) {
-        if (/CANCELLED/.test(String(e.message))) throw e;
-      }
       kept.push({
         ...v,
         coupang: verified.items,
@@ -2392,9 +2533,9 @@ async function runSocialSearch(platform) {
     }
     let r;
     if (platform === 'ali1688') {
-      const zhList = await zhQueriesFor([state.findQ2, q, ...koSeeds(src, src)]);
+      const zhList = await zhQueriesFor([q, ...koSeeds(src, src)]);
       if (zhList[0]) {
-        state.findQ2 = zhList[0];
+        rememberZh(src, zhList[0], state.zhManual && zhList[0] === q);
         q = zhList[0];
       }
       const rows = await videosFrom1688Keyword(zhList, seq);
@@ -2530,7 +2671,7 @@ async function installTools(force = false) {
 }
 
 function runDownload() {
-  if (!state.p.videos.length) return toast('먼저 제품찾기에서 영상을 추가하거나 링크를 붙여넣으세요.');
+  if (!state.p.videos.length) return toast('먼저 내 PC 영상을 올리거나, 제품찾기에서 추가하거나, 링크를 붙여넣으세요.');
   return task('영상 다운로드 중', async () => {
     const p = state.p;
     let failed = 0;
@@ -2555,7 +2696,10 @@ function runDownload() {
 }
 
 function markStep(text) {
-  if (state.status) state.status.text = text;
+  if (state.status) {
+    state.status.text = text;
+    pushStatusLog(text);
+  }
   updateStatus();
 }
 
@@ -2699,21 +2843,55 @@ function scriptContext(p, extra = {}) {
   };
 }
 
+function ensureTts(p) {
+  if (p.tts?.provider === 'typecast' && state.settings?.typecast) return;
+  if (p.tts?.provider === 'sapi' || p.tts?.provider === 'openai' || p.tts?.provider === 'eleven') return;
+  p.tts = {
+    provider: 'gemini',
+    voice: /Kore|Zephyr|Leda|Aoede|Sulafat|Achird|Puck|Charon|Fenrir|Algieba|Gacrux|Schedar/i.test(p.tts?.voice || '') ? p.tts.voice : 'Kore',
+    model: p.tts?.model === 'gemini-3.8-flash-tts' ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts',
+    emotion: 'normal',
+    speed: p.tts?.speed || 'brisk',
+  };
+}
+
 async function synthLines(p) {
-  try {
-    return await api('genVoice', p.name, p.lines, p.tts);
-  } catch (e) {
-    if (/CANCELLED/.test(e.message)) throw e;
-    const voices = await api('voices', 'sapi');
-    if (!voices?.length) throw e;
-    p.tts = { provider: 'sapi', voice: voices[0].id, model: '', emotion: 'normal', speed: 'brisk' };
-    return await api('genVoice', p.name, p.lines, p.tts);
+  ensureTts(p);
+  const tries = [];
+  if (p.tts.provider === 'typecast') tries.push('typecast', 'gemini', 'sapi');
+  else if (p.tts.provider === 'gemini') tries.push('gemini', 'typecast', 'sapi');
+  else tries.push(p.tts.provider, 'sapi');
+  let last = null;
+  for (const provider of [...new Set(tries)]) {
+    try {
+      if (provider !== p.tts.provider) {
+        if (provider === 'gemini') {
+          if (!state.settings?.gemini) continue;
+          p.tts = { provider: 'gemini', voice: 'Kore', model: 'gemini-3.8-flash-lite-tts', emotion: 'normal', speed: p.tts.speed || 'brisk' };
+        }
+        if (provider === 'typecast') {
+          if (!state.settings?.typecast) continue;
+          p.tts = { provider: 'typecast', voice: '', model: 'ssfm-v21', emotion: 'normal', speed: p.tts.speed || 'brisk' };
+        }
+        if (provider === 'sapi') {
+          const voices = await api('voices', 'sapi');
+          if (!voices?.length) continue;
+          p.tts = { provider: 'sapi', voice: voices[0].id, model: '', emotion: 'normal', speed: p.tts.speed || 'brisk' };
+        }
+      }
+      return await api('genVoice', p.name, p.lines, p.tts);
+    } catch (e) {
+      if (/CANCELLED/.test(e.message)) throw e;
+      last = e;
+    }
   }
+  throw last || new Error('음성을 만들지 못했습니다.');
 }
 
 async function speakLines(p) {
   p.length = narrationLength(p.length);
   if (!p.tts.speed) p.tts.speed = 'brisk';
+  ensureTts(p);
   p.audio = await synthLines(p);
   if (voiceSeconds(p.audio) < 25) {
     const script = await api('genScript', scriptContext(p, {
@@ -2767,92 +2945,78 @@ async function pickUsableSource(pool, p) {
   return null;
 }
 
-async function sourceHasChinese(name, file, dur) {
-  try {
-    if ((await api('probeCaption', file))?.has) return true;
-  } catch (e) {
-    if (/CANCELLED/.test(e.message)) throw e;
-  }
-  const length = Math.max(4, Number(dur) || 8);
-  const times = [Math.min(1.2, length * 0.2), length * 0.45, length * 0.72];
-  const shots = [];
-  for (const t of times) {
-    try {
-      const shot = await api('makeThumb', name, file, t);
-      if (shot) shots.push(shot);
-    } catch (e) {
-      if (/CANCELLED/.test(e.message)) throw e;
-    }
-  }
-  if (!shots.length) return false;
-  try {
-    const j = await api('judgeSource', { files: shots, file: shots[0] });
-    return !!j.chinese;
-  } catch (e) {
-    if (/CANCELLED/.test(e.message)) throw e;
-    return false;
-  }
-}
-
 async function downloadPool(pool, p) {
-  const out = [];
+  const out = (p.videos || []).filter((v) => v?.file && v.done);
   let login = false;
   const MAX = 8;
+  state.view = 'work';
+  state.workTab = 1;
+  p.videos = [...out];
+  render();
   for (let i = 0; i < pool.length && out.length < MAX; i++) {
     const cand = pool[i];
     if (!cand?.url) continue;
     if (out.some((x) => sameSource(x, cand))) continue;
-    markStep(`원본 받는 중 (${out.length + 1}/${MAX}) · 화면 중국어는 빼기`);
+    markStep(`원본 받는 중 (${out.length + 1}/${MAX})`);
     const row = { ...cand, platform: cand.platform || platformOf(cand.url), done: false, error: '' };
     p.videos = [...out, row];
-    p.pick = 0;
     render();
     try {
       Object.assign(row, await api('download', p.name, row, out.length), { done: true, error: '' });
     } catch (e) {
       if (/CANCELLED/.test(e.message)) throw e;
       if (/XHS_LOGIN/.test(e.message)) { login = true; continue; }
-      continue;
-    }
-    if (!row.file) continue;
-    if (out.some((x) => sameSource(x, row) || (x.size && row.size && x.size === row.size && Math.abs((x.dur || 0) - (row.dur || 0)) < 0.4))) {
+      markStep(`다운 실패 · ${(cand.title || cand.url || '').slice(0, 28)} · ${e.message}`);
       p.videos = [...out];
       render();
       continue;
     }
-    markStep('화면 중국어 확인 중');
-    let chinese = false;
-    try {
-      chinese = await sourceHasChinese(p.name, row.file, row.dur);
-    } catch (e) {
-      if (/CANCELLED/.test(e.message)) throw e;
+    if (!row.file) {
+      p.videos = [...out];
+      render();
+      continue;
     }
-    if (chinese) {
-      markStep('화면에 중국어가 있어 건너뜁니다');
+    if (out.some((x) => sameSource(x, row) || (x.size && row.size && x.size === row.size && Math.abs((x.dur || 0) - (row.dur || 0)) < 0.4))) {
+      markStep(`같은 영상이라 건너뜀 · ${(cand.title || cand.url || '').slice(0, 28)}`);
       p.videos = [...out];
       render();
       continue;
     }
     out.push(row);
     p.videos = [...out];
-    p.pick = 0;
+    if (out.length === 1) p.pick = 0;
     render();
   }
   p.videos = out;
-  p.pick = 0;
   p.analyzed = false;
   p.scenes = [];
   if (!out.length && login) throw new Error('해외 플랫폼 로그인이 필요합니다. 열린 창에서 로그인한 뒤 다시 누르세요.');
   return out;
 }
 
-async function produceFromPicked() {
-  const p = state.p;
-  const idx = Math.max(0, Math.min((p.videos || []).length - 1, +p.pick || 0));
-  const chosen = p.videos[idx];
-  if (!chosen?.file) throw new Error('미리보기로 확인한 뒤, 쓸 영상을 선택하세요.');
-  p.videos = [chosen];
-  p.pick = 0;
+function filledLines(p) {
+  return (p?.lines || []).filter((x) => String(x || '').trim());
+}
+
+function voiceReady(p) {
+  return !!(p.ttsReady && filledLines(p).length && Array.isArray(p.audio) && p.audio.length === p.lines.length && p.audio.every((a) => a?.file));
+}
+
+function scenesReady(p) {
+  return !!(filledLines(p).length && Array.isArray(p.scenes) && p.scenes.length === p.lines.length && p.scenes.every((s) => p.videos[s.src]?.scenes?.[s.clip]));
+}
+
+function oneClickResumeAt(p) {
+  if (!p?.videos?.some((v) => v?.file) || p.exported) return '';
+  if (!(p.analyzed && p.videos.some((v) => v.scenes?.length))) return '';
+  if (!filledLines(p).length) return '대본 생성';
+  if (!voiceReady(p)) return '음성 생성';
+  if (!scenesReady(p)) return '장면 매칭';
+  if (!p.prepared?.voiceFile) return '편집 준비';
+  return '영상 내보내기';
+}
+
+function resetOneClick(p) {
   p.analyzed = false;
   p.scenes = [];
   p.lines = [];
@@ -2860,86 +3024,179 @@ async function produceFromPicked() {
   p.ttsReady = false;
   p.prepared = null;
   p.exported = null;
+  p.subtitles = [];
+}
+
+const stepBusy = (msg) => /시간 초과|비어|503|429|502|504|UNAVAILABLE|high demand|overloaded/i.test(String(msg || ''));
+
+async function pauseStep(sec) {
+  for (let i = 0; i < sec * 2; i++) {
+    if (state.stop) throw new Error('CANCELLED');
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (state.stop) throw new Error('CANCELLED');
+}
+
+async function retryStep(label, fn) {
+  let last;
+  for (let i = 0; i < 3; i++) {
+    try {
+      markStep(i ? `${label} 같은 단계에서 다시 시작 (${i + 1}/3)` : label);
+      return await fn();
+    } catch (e) {
+      if (/CANCELLED/.test(String(e.message))) throw e;
+      last = e;
+      if (!stepBusy(e.message) || i === 2) throw e;
+      const sec = i === 0 ? 10 : 20;
+      markStep(`${label}이 잠깐 막혀 ${sec}초 후 같은 단계에서 다시 시작합니다`);
+      await pauseStep(sec);
+    }
+  }
+  throw last;
+}
+
+async function produceFromPicked() {
+  const p = state.p;
+  const idx = Math.max(0, Math.min((p.videos || []).length - 1, +p.pick || 0));
+  const chosen = p.videos[idx];
+  if (!chosen?.file) throw new Error('미리보기로 확인한 뒤, 쓸 영상을 선택하세요.');
+  const same = p.videos.length === 1 && p.videos[0]?.file === chosen.file;
+  p.videos = [chosen];
+  p.pick = 0;
+  if (!same || p.exported) resetOneClick(p);
   p.length = 30;
   if (!p.tts.speed) p.tts.speed = 'brisk';
   state.view = 'work';
   state.workTab = 1;
   render();
+  return finishOneClick(p);
+}
 
-  if (p.coupang?.length) {
-    markStep('쿠팡 파트너스 링크 만드는 중');
-    p.coupang = await pickOnePartner(p.coupang);
+async function finishOneClick(p) {
+  const resumeAt = oneClickResumeAt(p);
+  if (resumeAt) markStep(`${resumeAt}부터 이어서 진행`);
+
+  if (p.coupang?.length && !p.coupang[0]?.partner) {
+    await retryStep('쿠팡 파트너스 링크 만드는 중', async () => {
+      p.coupang = await pickOnePartner(p.coupang);
+    });
+    autosave();
   }
 
-  markStep('소스 영상 분석 중');
-  const analyzed = await api('analyzeSources', p.name, [{ file: chosen.originalFile || chosen.file }]);
-  Object.assign(p.videos[0], analyzed[0]);
-  p.analyzed = true;
-  p.scenes = [];
-
+  if (!p.analyzed || !p.videos.some((v) => v.scenes?.length)) {
+    state.workTab = 1;
+    await retryStep('소스 영상 분석 중', async () => {
+      const ready = p.videos.filter((v) => v.file);
+      const analyzed = await api('analyzeSources', p.name, ready.map((v) => ({ file: v.originalFile || v.file, local: !!v.local, forceClean: !v.cleaned })));
+      analyzed.forEach((x, i) => Object.assign(ready[i], x));
+      applyCaptionSubY(p);
+      p.analyzed = true;
+      p.scenes = [];
+    });
+    autosave();
+  }
   if (!p.product?.name) {
-    const titled = chosen.title && !/^https?:/.test(chosen.title) ? chosen.title : (p.cpKeyword || p.name);
-    p.product = { name: String(titled).slice(0, 40), features: [], kw: { ko: [String(titled).slice(0, 24)] }, flow: '' };
+    const titled = p.videos.find((v) => v.title && !/^https?:/.test(v.title));
+    if (titled) p.product = { name: titled.title.slice(0, 40), features: [], kw: { ko: [titled.title.slice(0, 24)] }, flow: '' };
+    else if (p.cpKeyword || p.name) p.product = { name: String(p.cpKeyword || p.name).slice(0, 40), features: [], kw: { ko: [String(p.cpKeyword || p.name).slice(0, 24)] }, flow: '' };
+  }
+  if (p.name === '새 프로젝트' && p.product?.name) p.name = p.product.name.slice(0, 30);
+
+  if (!filledLines(p).length) {
+    state.workTab = 2;
+    await retryStep('대본 생성 중', async () => {
+      p.length = narrationLength(p.length);
+      if (!p.tts.speed) p.tts.speed = 'brisk';
+      await fillReelHook(p.edit, p.product?.name || p.cpKeyword || p.name);
+      const script = await api('genScript', scriptContext(p));
+      p.lines = withHookLine(script.lines, reelHookTitle(p.edit));
+      if (!filledLines(p).length) throw new Error('대본을 만들지 못했습니다.');
+      p.audio = [];
+      p.ttsReady = false;
+      p.prepared = null;
+      p.scenes = [];
+    });
+    autosave();
   }
 
-  markStep('대본 생성 중');
-  state.workTab = 2;
-  await fillReelHook(p.edit, p.product?.name || p.cpKeyword || p.name);
-  const script = await api('genScript', scriptContext(p));
-  p.lines = withHookLine(script.lines, reelHookTitle(p.edit));
-  if (!p.lines.length) throw new Error('대본을 만들지 못했습니다.');
-  p.audio = [];
-  p.ttsReady = false;
-  p.prepared = null;
-  p.scenes = [];
+  if (!voiceReady(p)) {
+    state.workTab = 2;
+    await retryStep('음성 생성 중', async () => {
+      p.prepared = null;
+      await speakLines(p);
+      p.ttsReady = true;
+      buildSubtitles();
+    });
+    autosave();
+  } else if (!p.subtitles?.length) buildSubtitles();
 
-  markStep('음성 생성 중');
-  await speakLines(p);
-  p.ttsReady = true;
-  buildSubtitles();
+  if (!scenesReady(p)) {
+    state.workTab = 3;
+    await retryStep('장면 매칭 중', async () => {
+      let scenes = heuristicScenes();
+      try {
+        const matches = await api('aiMatch', p.lines, p.videos.map((v) => (v.scenes || []).map((s) => s.label)));
+        if (Array.isArray(matches)) {
+          scenes = scenes.map((s, i) => {
+            const m = matches.find((x) => +x.line === i);
+            return m && p.videos[m.src]?.scenes?.[m.clip] ? { ...s, src: +m.src, clip: +m.clip } : s;
+          });
+        }
+      } catch (e) {
+        if (/CANCELLED/.test(e.message)) throw e;
+        if (stepBusy(e.message)) throw e;
+      }
+      p.scenes = scenes;
+      buildSubtitles();
+    });
+    autosave();
+  }
 
-  markStep('장면 매칭 중');
-  state.workTab = 3;
-  let scenes = heuristicScenes();
-  try {
-    const matches = await api('aiMatch', p.lines, p.videos.map((v) => (v.scenes || []).map((s) => s.label)));
-    if (Array.isArray(matches)) {
-      scenes = scenes.map((s, i) => {
-        const m = matches.find((x) => +x.line === i);
-        return m && p.videos[m.src]?.scenes?.[m.clip] ? { ...s, src: +m.src, clip: +m.clip } : s;
+  if (!p.prepared?.voiceFile) {
+    await retryStep('편집 준비 중', async () => {
+      p.prepared = await api('prepareEdit', p.name, p.audio, p.edit.prep.silence || 'none');
+      buildSubtitles();
+    });
+    autosave();
+  }
+
+  if (!p.exported) {
+    state.workTab = 5;
+    await retryStep('영상 내보내는 중', async () => {
+      ensureTimeline();
+      applyReelHook(p.edit);
+      const scenePayload = p.scenes.map((s) => {
+        const v = p.videos[s.src];
+        const c = v?.scenes?.[s.clip];
+        return { file: v?.file, start: c?.start || 0, dur: s.dur, hasAudio: !!v?.hasAudio };
       });
-    }
-  } catch (e) {
-    if (/CANCELLED/.test(e.message)) throw e;
+      if (scenePayload.some((s) => !s.file)) throw new Error('장면에 연결된 소스 영상이 없습니다.');
+      p.exported = await api('render', p.name, {
+        scenes: scenePayload, subs: p.subtitles, edit: coverEdit(p, p.edit), voiceFile: p.prepared?.voiceFile || null,
+        header: headerPayload(p),
+        templateImage: p.edit.showTemplateImage ? p.edit.templateImage : null,
+        bgm: p.edit.bgm, sfx: p.edit.sfx, keepAudio: p.edit.prep.keepAudio || !p.prepared?.voiceFile, voiceOn: !!(p.edit.voice && p.prepared?.voiceFile), subOn: p.edit.sub,
+      });
+    });
+    autosave();
   }
-  p.scenes = scenes;
-  buildSubtitles();
-
-  markStep('편집 준비 중');
-  p.prepared = await api('prepareEdit', p.name, p.audio, p.edit.prep.silence || 'none');
-  buildSubtitles();
-
-  markStep('영상 내보내는 중');
-  state.workTab = 5;
-  ensureTimeline();
-  applyReelHook(p.edit);
-  const scenePayload = p.scenes.map((s) => {
-    const v = p.videos[s.src];
-    const c = v?.scenes?.[s.clip];
-    return { file: v?.file, start: c?.start || 0, dur: s.dur, hasAudio: !!v?.hasAudio };
-  });
-  if (scenePayload.some((s) => !s.file)) throw new Error('장면에 연결된 소스 영상이 없습니다.');
-  const file = await api('render', p.name, {
-    scenes: scenePayload, subs: p.subtitles, edit: coverEdit(p, p.edit), voiceFile: p.prepared?.voiceFile || null,
-    header: headerPayload(p),
-    templateImage: p.edit.showTemplateImage ? p.edit.templateImage : null,
-    bgm: p.edit.bgm, sfx: p.edit.sfx, keepAudio: p.edit.prep.keepAudio || !p.prepared?.voiceFile, voiceOn: !!(p.edit.voice && p.prepared?.voiceFile), subOn: p.edit.sub,
-  });
-  p.exported = file;
-  state.share = await api('shareStart', file).catch(() => null);
-  const coupangNote = p.coupang?.[0]?.partner ? ', 파트너스 링크 생성' : (p.coupang?.length ? ', 쿠팡 1개' : '');
+  let coupangNote = p.coupang?.[0]?.url ? (p.coupang[0].partner ? ', 파트너스 링크 생성' : ', 쿠팡 1개') : '';
+  if (!p.coupang?.length) {
+    try {
+      markStep('쿠팡 상품 검색 중');
+      const kw = p.cpKeyword || p.product?.kw?.ko?.[0] || p.product?.name || p.name;
+      p.cpKeyword = kw;
+      const rows = await api(state.aiStatus.coupang ? 'coupangSearch' : 'coupangBrowse', kw);
+      markStep('쿠팡 파트너스 링크 만드는 중');
+      p.coupang = await pickOnePartner(rows);
+      coupangNote = p.coupang[0]?.partner ? ', 파트너스 링크 생성' : (p.coupang.length ? ', 쿠팡 1개' : ', 쿠팡 없음');
+    } catch (e) {
+      if (/CANCELLED/.test(e.message)) throw e;
+      coupangNote = ', 쿠팡 검색 실패';
+    }
+  }
   state.workTab = 6;
-  state.modal = { type: 'done', file };
+  state.modal = { type: 'done', file: p.exported };
   return `원클릭 생성 완료 — ${p.lines.length}문장${coupangNote}`;
 }
 
@@ -2968,6 +3225,7 @@ async function makeOneClick(d) {
     state.p.videos = [{ ...picked.video, platform: picked.video.platform || platformOf(picked.video.url) || 'xhs', done: false }];
     state.p.product = { name: label.slice(0, 40), features: [], kw: { ko: [(picked.verified.query || keyword).slice(0, 24)] }, flow: '' };
     state.p.cpKeyword = picked.verified.query || keyword;
+    if (!state.p.searchKo) state.p.searchKo = state.p.cpKeyword;
     state.p.name = `${label.slice(0, 16)} ${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())} ${pad(stamp.getHours())}${pad(stamp.getMinutes())}`;
   }
   state.p.coupang = picked.verified.items || picked.video?.coupang || [];
@@ -3004,99 +3262,7 @@ async function makeOneClick(d) {
   if (!chosen?.file) throw new Error('쓸 수 있는 원본 영상을 받지 못했습니다. 해외 플랫폼 로그인 창을 확인한 뒤 다시 누르세요.');
   p.videos = [chosen];
   if (chosen.coupang?.length) p.coupang = chosen.coupang;
-  markStep('쿠팡 파트너스 링크 만드는 중');
-  p.coupang = await pickOnePartner(p.coupang);
-
-  if (!p.analyzed || !p.videos.some((v) => v.scenes?.length)) {
-    markStep('소스 영상 분석 중');
-    const ready = p.videos.filter((v) => v.file);
-    const analyzed = await api('analyzeSources', p.name, ready.map((v) => ({ file: v.originalFile || v.file })));
-    analyzed.forEach((x, i) => Object.assign(ready[i], x));
-    p.analyzed = true;
-    p.scenes = [];
-  }
-  if (!p.product?.name) {
-    const titled = p.videos.find((v) => v.title && !/^https?:/.test(v.title));
-    if (titled) p.product = { name: titled.title.slice(0, 40), features: [], kw: { ko: [titled.title.slice(0, 24)] }, flow: '' };
-  }
-  if (p.name === '새 프로젝트' && p.product?.name) p.name = p.product.name.slice(0, 30);
-
-  markStep('대본 생성 중');
-  state.workTab = 2;
-  p.length = 30;
-  p.tts.speed = 'brisk';
-  await fillReelHook(p.edit, p.product?.name || p.cpKeyword || p.name);
-  const script = await api('genScript', scriptContext(p));
-  p.lines = withHookLine(script.lines, reelHookTitle(p.edit));
-  if (!p.lines.length) throw new Error('대본을 만들지 못했습니다.');
-  p.audio = [];
-  p.ttsReady = false;
-  p.prepared = null;
-  p.scenes = [];
-
-  markStep('음성 생성 중');
-  await speakLines(p);
-  p.ttsReady = true;
-  buildSubtitles();
-
-  markStep('장면 매칭 중');
-  state.workTab = 3;
-  let scenes = heuristicScenes();
-  try {
-    const matches = await api('aiMatch', p.lines, p.videos.map((v) => (v.scenes || []).map((s) => s.label)));
-    if (Array.isArray(matches)) {
-      scenes = scenes.map((s, i) => {
-        const m = matches.find((x) => +x.line === i);
-        return m && p.videos[m.src]?.scenes?.[m.clip] ? { ...s, src: +m.src, clip: +m.clip } : s;
-      });
-    }
-  } catch (e) {
-    if (/CANCELLED/.test(e.message)) throw e;
-  }
-  p.scenes = scenes;
-  buildSubtitles();
-
-  markStep('편집 준비 중');
-  p.prepared = await api('prepareEdit', p.name, p.audio, p.edit.prep.silence || 'none');
-  buildSubtitles();
-
-  markStep('영상 내보내는 중');
-  state.workTab = 5;
-  ensureTimeline();
-  applyReelHook(p.edit);
-  const scenePayload = p.scenes.map((s) => {
-    const v = p.videos[s.src];
-    const c = v?.scenes?.[s.clip];
-    return { file: v?.file, start: c?.start || 0, dur: s.dur, hasAudio: !!v?.hasAudio };
-  });
-  if (scenePayload.some((s) => !s.file)) throw new Error('장면에 연결된 소스 영상이 없습니다.');
-  const file = await api('render', p.name, {
-    scenes: scenePayload, subs: p.subtitles, edit: coverEdit(p, p.edit), voiceFile: p.prepared?.voiceFile || null,
-    header: headerPayload(p),
-    templateImage: p.edit.showTemplateImage ? p.edit.templateImage : null,
-    bgm: p.edit.bgm, sfx: p.edit.sfx, keepAudio: p.edit.prep.keepAudio || !p.prepared?.voiceFile, voiceOn: !!(p.edit.voice && p.prepared?.voiceFile), subOn: p.edit.sub,
-  });
-  p.exported = file;
-  state.share = await api('shareStart', file).catch(() => null);
-
-  let coupangNote = p.coupang?.[0]?.url ? (p.coupang[0].partner ? ', 파트너스 링크 생성' : ', 쿠팡 1개') : '';
-  if (!p.coupang?.length) {
-    try {
-      markStep('쿠팡 상품 검색 중');
-      const kw = p.cpKeyword || p.product?.kw?.ko?.[0] || p.product?.name || p.name;
-      p.cpKeyword = kw;
-      const rows = await api(state.aiStatus.coupang ? 'coupangSearch' : 'coupangBrowse', kw);
-      markStep('쿠팡 파트너스 링크 만드는 중');
-      p.coupang = await pickOnePartner(rows);
-      coupangNote = p.coupang[0]?.partner ? ', 파트너스 링크 생성' : (p.coupang.length ? ', 쿠팡 1개' : ', 쿠팡 없음');
-    } catch (e) {
-      if (/CANCELLED/.test(e.message)) throw e;
-      coupangNote = ', 쿠팡 검색 실패';
-    }
-  }
-  state.workTab = 6;
-  state.modal = { type: 'done', file };
-  return `원클릭 생성 완료 — ${p.lines.length}문장${coupangNote}`;
+  return finishOneClick(p);
 }
 
 function keywordFromCoupangUrl(raw) {
@@ -3112,41 +3278,119 @@ function isShopMp4(href) {
   return href && (/\.(mp4|m3u8)(\?|$)/i.test(href) || /cloud\.video\.taobao|cloudvideocdn|video\.alicdn|xhscdn|sns-video/i.test(href));
 }
 
-async function videosFrom1688Keyword(zhOrList, seq, want = 8) {
+async function withoutZhThumbs(items, seq) {
+  const imgs = [...new Set(items.map((it) => String(it.img || '').trim()).filter((u) => /^https?:\/\//i.test(u)))];
+  if (!imgs.length) return items;
+  markStep(`썸네일 중국어 확인 중 · ${imgs.length}장`);
+  let bad = [];
+  try {
+    bad = (await api('thumbZh', imgs)) || [];
+  } catch (e) {
+    if (/CANCELLED/.test(String(e.message))) throw e;
+    return items;
+  }
+  if (seq !== searchSeq) return [];
+  const skip = new Set(bad);
+  const kept = items.filter((it) => !skip.has(String(it.img || '').trim()));
+  const dropped = items.length - kept.length;
+  if (dropped) markStep(`썸네일 중국어 ${dropped}개 제외`);
+  return kept;
+}
+
+function videoHit(raw) {
+  if (!raw) return { url: '', poster: '' };
+  if (typeof raw === 'string') return { url: raw, poster: '' };
+  return { url: String(raw.url || ''), poster: String(raw.poster || '') };
+}
+
+async function videoThumbHasZh(poster, mediaUrl) {
+  const cover = String(poster || '').trim();
+  if (/^https?:\/\//i.test(cover)) {
+    try {
+      const bad = (await api('thumbZh', [cover])) || [];
+      if (bad.includes(cover)) return true;
+    } catch (e) {
+      if (/CANCELLED/.test(String(e.message))) throw e;
+    }
+  }
+  const href = String(mediaUrl || '').trim();
+  if (!/^https?:\/\//i.test(href) || /\.m3u8(\?|$)/i.test(href)) return false;
+  try {
+    return !!(await api('videoFrameZh', href));
+  } catch (e) {
+    if (/CANCELLED/.test(String(e.message))) throw e;
+    return false;
+  }
+}
+
+async function videosFrom1688Keyword(zhOrList, seq, want = 8, sourceKeyword = '') {
   const queries = [...new Set((Array.isArray(zhOrList) ? zhOrList : [zhOrList]).map((s) => String(s || '').trim()).filter(hasHan))];
+  const tried = new Set(queries);
   const withVideo = [];
   const seen = new Set();
-  for (const q of queries) {
-    if (seq !== searchSeq || withVideo.length >= want) break;
-    markStep(`1688에서 "${q}" 상품 검색 중`);
-    let products = [];
-    try {
-      const r = await api('searchSocial', 'ali1688', q);
-      products = (r.items || []).filter((row) => /detail\.1688\.com\/offer\/\d+/.test(row.url || ''));
-    } catch (e) {
-      if (/CANCELLED|접속 이상/.test(e.message)) throw e;
-      continue;
-    }
-    const unique = [];
-    for (const row of products) {
-      const id = videoIdOf(row.url);
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      unique.push({ ...row, platform: 'ali1688' });
-    }
-    for (let i = 0; i < unique.length && i < 10 && withVideo.length < want; i++) {
+  const goal = Math.max(want, 6);
+  let extraRounds = 0;
+  for (let qi = 0; qi < queries.length && withVideo.length < goal; qi++) {
+    if (seq !== searchSeq) return withVideo;
+    const q = queries[qi];
+    const before = withVideo.length;
+    for (let page = 1; page <= 4 && withVideo.length < goal; page++) {
       if (seq !== searchSeq) return withVideo;
-      const item = unique[i];
-      markStep(`1688 상품 영상 확인 중 (${withVideo.length + 1}/${want}) · ${q}`);
-      if (withVideo.length || i) await new Promise((ok) => setTimeout(ok, 900));
+      markStep(page === 1
+        ? `1688에서 "${q}" 상품 검색 중 · 영상 ${withVideo.length}/${goal}`
+        : `1688 "${q}" ${page}페이지 · 영상 ${withVideo.length}/${goal}`);
+      let products = [];
       try {
-        const href = await api('grabSocialVideo', item.url, 'ali1688');
-        if (!isShopMp4(href)) continue;
-        const row = { ...item, video: true, media: href };
-        if (withVideo.some((x) => sameSource(x, row))) continue;
-        withVideo.push(row);
+        const r = await api('searchSocial', 'ali1688', q, page);
+        products = (r.items || []).filter((row) => /detail\.1688\.com\/offer\/\d+/.test(row.url || ''));
       } catch (e) {
         if (/CANCELLED|접속 이상/.test(e.message)) throw e;
+        break;
+      }
+      const unique = [];
+      for (const row of products) {
+        const id = videoIdOf(row.url);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        unique.push({ ...row, platform: 'ali1688' });
+      }
+      if (!unique.length) break;
+      unique.sort((a, b) => Number(!!b.video) - Number(!!a.video));
+      for (let i = 0; i < unique.length && withVideo.length < goal; i++) {
+        if (seq !== searchSeq) return withVideo;
+        const item = unique[i];
+        markStep(`1688 상품 영상 확인 중 (${withVideo.length + 1}/${goal}) · ${q}`);
+        if (withVideo.length || i) await new Promise((ok) => setTimeout(ok, 900));
+        try {
+          const hit = videoHit(await api('grabSocialVideo', item.url, 'ali1688'));
+          if (!isShopMp4(hit.url)) continue;
+          markStep(`영상 썸네일 확인 중 · ${(item.title || q).slice(0, 18)}`);
+          if (await videoThumbHasZh(hit.poster, hit.url)) {
+            markStep(`영상 썸네일 중국어라 건너뜀 · ${(item.title || item.url || '').slice(0, 24)}`);
+            continue;
+          }
+          const row = { ...item, video: true, media: hit.url, img: hit.poster || item.img };
+          if (withVideo.some((x) => sameSource(x, row))) continue;
+          withVideo.push(row);
+        } catch (e) {
+          if (/CANCELLED|접속 이상/.test(e.message)) throw e;
+        }
+      }
+    }
+    const needMore = withVideo.length < 6 && (withVideo.length === before || qi === queries.length - 1);
+    if (needMore && sourceKeyword && extraRounds < 2) {
+      extraRounds += 1;
+      markStep(`"${q}"에서 영상이 부족합니다 · "${sourceKeyword}" 관련 중국어 검색어 만드는 중`);
+      let more = [];
+      try {
+        more = await api('relatedZh', sourceKeyword, [...tried]);
+      } catch (e) {
+        if (/CANCELLED/.test(String(e.message))) throw e;
+      }
+      for (const s of more || []) {
+        if (tried.has(s)) continue;
+        tried.add(s);
+        queries.push(s);
       }
     }
   }
@@ -3169,7 +3413,9 @@ async function videosFromXhsKeyword(zhOrList, seq, want = 6) {
       if (/XHS_LOGIN/.test(e.message)) throw e;
       continue;
     }
-    for (const it of items.slice(0, 10)) {
+    const clean = await withoutZhThumbs(items, seq);
+    if (seq !== searchSeq) return withVideo;
+    for (const it of clean) {
       if (seq !== searchSeq || withVideo.length >= want) break;
       const id = videoIdOf(it.url);
       if (!id || seen.has(id)) continue;
@@ -3227,8 +3473,13 @@ async function videosFromShopImage(plat, images, seq) {
     markStep(`${names[plat]} 상품 영상 확인 중 (${withVideo.length + 1}/4) · 접속 이상이 뜨면 영상 상세가 숨겨집니다. 크롬에서 안내가 사라지면 이어갑니다`);
     if (i) await new Promise((ok) => setTimeout(ok, 1800));
     try {
-      const href = await api('grabSocialVideo', item.url, plat);
-      if (href) withVideo.push({ ...item, video: true, media: href });
+      const hit = videoHit(await api('grabSocialVideo', item.url, plat));
+      if (!hit.url) continue;
+      if (plat === 'ali1688' && await videoThumbHasZh(hit.poster, hit.url)) {
+        markStep(`영상 썸네일 중국어라 건너뜀 · ${(item.title || item.url || '').slice(0, 24)}`);
+        continue;
+      }
+      withVideo.push({ ...item, video: true, media: hit.url, img: hit.poster || item.img });
     } catch (e) {
       if (/CANCELLED|접속 이상/.test(e.message)) throw e;
     }
@@ -3278,15 +3529,15 @@ async function produceFromCoupangProduct(info, query) {
   if (!keyword || keyword.length < 2) throw new Error('상품명에서 검색어를 만들지 못했습니다.');
   const images = [...new Set([...(info.imgs || []), info.img].filter(Boolean))];
 
+  const typedZh = activeZh(keyword);
   state.findQ1 = keyword;
-  state.zhSource = '';
+  if (!typedZh) state.findQ2 = '';
   render();
 
   markStep(`"${keyword}" 중국어 번역 중`);
-  const zhList = await zhQueriesFor([state.findQ2, ...koSeeds(keyword, info.title)]);
+  const zhList = await zhQueriesFor(typedZh ? [typedZh, ...koSeeds(keyword, info.title)] : koSeeds(keyword, info.title));
   if (!zhList.length) throw new Error('중국어 검색어를 만들지 못했습니다.');
-  state.findQ2 = zhList[0];
-  state.zhSource = keyword;
+  rememberZh(keyword, zhList[0], state.zhManual && zhList[0] === typedZh);
   render();
 
   markStep('같은 제품 영상 찾는 중');
@@ -3310,15 +3561,49 @@ async function produceFromCoupangProduct(info, query) {
       pool.push(item);
     }
   };
+  const stamp = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const productName = String(info.title || keyword).replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || keyword;
+  const ensureProject = async () => {
+    if (state.p?.cpKeyword === keyword && state.p.name && state.p.name !== '새 프로젝트') {
+      state.view = 'work';
+      state.workTab = 1;
+      return state.p;
+    }
+    if (state.p?.videos?.length && state.p.name && state.p.name !== '새 프로젝트') await api('saveProject', state.p).catch(() => {});
+    state.p = newProject();
+    state.p.length = 30;
+    state.p.tts.speed = 'brisk';
+    state.added = [];
+    state.p.product = { name: productName, features: [], kw: { ko: [keyword.slice(0, 24)] }, flow: '' };
+    state.p.cpKeyword = keyword;
+    state.p.searchKo = keyword;
+    state.p.name = `${keyword.slice(0, 16)} ${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())} ${pad(stamp.getHours())}${pad(stamp.getMinutes())}`;
+    state.p.coupang = [coupangProduct];
+    state.view = 'work';
+    state.workTab = 1;
+    render();
+    markStep('쿠팡 파트너스 링크 만드는 중');
+    state.p.coupang = await pickOnePartner([coupangProduct]);
+    return state.p;
+  };
+
   if (seq !== searchSeq) return '검색이 중단되었습니다.';
   markStep('1688에서 같은 제품 영상 찾는 중');
-  try { take(await videosFrom1688Keyword(zhList, seq, 8), 'ali1688'); } catch (e) {
+  try { take(await videosFrom1688Keyword(zhList, seq, 8, keyword), 'ali1688'); } catch (e) {
     if (/CANCELLED|접속 이상/.test(e.message)) throw e;
   }
+  if (pool.length) {
+    const p = await ensureProject();
+    markStep(`찾은 영상 ${pool.length}개 받는 중`);
+    await downloadPool(pool, p);
+  }
   if (seq !== searchSeq) return '검색이 중단되었습니다.';
-  markStep('샤오홍슈에서 같은 제품 영상 찾는 중');
-  try { take(await videosFromXhsKeyword(zhList.slice(0, 3), seq, 6), 'xhs'); } catch (e) {
-    if (/CANCELLED/.test(e.message)) throw e;
+  if (pool.length < 8) {
+    markStep('샤오홍슈에서 같은 제품 영상 찾는 중');
+    try { take(await videosFromXhsKeyword(zhList.slice(0, 3), seq, 8 - pool.length), 'xhs'); } catch (e) {
+      if (/CANCELLED/.test(e.message)) throw e;
+    }
   }
   state.findLoading = false;
   if (!pool.length) {
@@ -3330,31 +3615,9 @@ async function produceFromCoupangProduct(info, query) {
   const n1688 = pool.filter((v) => v.platform === 'ali1688').length;
   const nXhs = pool.filter((v) => v.platform === 'xhs').length;
   state.findNote = `쿠팡 "${keyword}" — 1688 ${n1688}개 · 샤오홍슈 ${nXhs}개. 미리보고 고른 뒤 원클릭 생성하세요.`;
-  render();
-
-  if (state.p?.videos?.length && state.p.name && state.p.name !== '새 프로젝트') await api('saveProject', state.p).catch(() => {});
-  state.p = newProject();
-  state.p.length = 30;
-  state.p.tts.speed = 'brisk';
-  state.added = [];
-  state.view = 'work';
-  state.workTab = 1;
-  render();
-
-  const stamp = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const productName = String(info.title || keyword).replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || keyword;
-  state.p.product = { name: productName, features: [], kw: { ko: [keyword.slice(0, 24)] }, flow: '' };
-  state.p.cpKeyword = keyword;
-  state.p.name = `${keyword.slice(0, 16)} ${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())} ${pad(stamp.getHours())}${pad(stamp.getMinutes())}`;
-  state.p.coupang = [coupangProduct];
-  const p = state.p;
-
-  markStep('쿠팡 파트너스 링크 만드는 중');
-  p.coupang = await pickOnePartner([coupangProduct]);
-
+  const p = await ensureProject();
   const got = await downloadPool(pool, p);
-  if (!got.length) throw new Error('화면에 중국어가 없는 원본을 받지 못했습니다. 다른 검색어로 다시 누르세요.');
+  if (!got.length) throw new Error('원본 영상을 받지 못했습니다. 다른 검색어로 다시 누르세요.');
   p.pick = 0;
   state.workTab = 1;
   render();
@@ -3366,7 +3629,7 @@ function headerPayload(p) {
   const e = p.edit;
   return {
     show: !!(e.header && (e.headTop || e.headTitle || tpl.look === 'reel')),
-    top: e.headTop, title: e.headTitle, stat: e.headStat || '',
+    top: e.headTop, title: e.headTitle, stat: ensureHeadStat(e),
     color: tpl.color, frame: tpl.frame, bg: tpl.bg, bar: tpl.bar || tpl.color, look: tpl.look,
   };
 }
@@ -3379,7 +3642,7 @@ function applyReelHook(edit, title) {
   if (!edit.headTop) edit.headTop = '꿀템나라';
   if (title) edit.headTitle = title;
   else if (!edit.headTitle) edit.headTitle = '일본 천재가 개발해 떼돈 번 제품';
-  if (!edit.headStat) edit.headStat = '조회수 235만 | 댓글 697개';
+  ensureHeadStat(edit);
 }
 
 async function fillReelHook(edit, product) {
@@ -3397,6 +3660,79 @@ function reelHookTitle(edit) {
   return String(edit?.headTitle || '일본 천재가 개발해 떼돈 번 제품').replace(/\s+/g, ' ').trim();
 }
 
+function deployTitle(p) {
+  const headline = String(p?.edit?.headTitle || '').replace(/\s+/g, ' ').trim();
+  if (p?.edit?.header && headline) return headline;
+  return String(p?.upload?.title || '').trim() || (p?.name && p.name !== '새 프로젝트' ? p.name : '');
+}
+
+function hashTag(word) {
+  const t = String(word || '').replace(/[^\w가-힣]/g, '');
+  return t.length >= 2 ? `#${t}` : '';
+}
+
+function deployTags(p) {
+  const kw = koSearchKeyword(p);
+  const kwFlat = kw.replace(/\s+/g, '');
+  const kwParts = kw.split(/\s+/).filter((w) => w.length >= 2);
+  const skip = /세일|할인|특가|최저|휴대용|가정용|다용도|자동|인증|정품|국내|무료|배송|로켓|고주파|진동|회백|블랙|화이트|세트|당일|추천|인기/;
+  const used = new Set([kwFlat, ...kwParts]);
+  const related = [];
+  const title = productTitleText(p);
+  for (const w of title.split(/[^가-힣A-Za-z]+/)) {
+    if (w.length < 2 || used.has(w) || skip.test(w)) continue;
+    if (kwParts.some((part) => w.includes(part) || part.includes(w))) continue;
+    used.add(w);
+    related.push(w);
+    if (related.length === 2) break;
+  }
+  for (const w of kwParts) {
+    if (related.length === 2) break;
+    if (!related.includes(w)) related.push(w);
+  }
+  const tags = [];
+  const add = (word) => {
+    const tag = hashTag(word);
+    if (tag && !tags.includes(tag)) tags.push(tag);
+  };
+  add(kwFlat);
+  related.forEach(add);
+  add('꿀템');
+  return tags.slice(0, 4).join(' ');
+}
+
+function applyBlastCopy(p, force) {
+  const key = `${p?.name || ''}|${p?.exported || ''}`;
+  const same = state.blast.copyFor === key;
+  if (force || !same) {
+    state.blast.title = deployTitle(p);
+    state.blast.desc = String(p?.upload?.desc || '').trim() || deployDesc(p);
+    state.blast.copyFor = key;
+    return;
+  }
+  if (!state.blast.title) state.blast.title = deployTitle(p);
+  if (!state.blast.desc) state.blast.desc = String(p?.upload?.desc || '').trim() || deployDesc(p);
+}
+
+function deployDesc(p) {
+  const body = '제품 구매는 프로필 하단 구매링크 확인\n구매링크 내 1번째 제품 클릭!!';
+  const tags = deployTags(p);
+  return tags ? `${body}\n\n${tags}` : body;
+}
+
+function deployCaption(p) {
+  const title = deployTitle(p);
+  const desc = String(p?.upload?.desc || '').trim() || deployDesc(p);
+  return [title, desc].map((s) => String(s || '').trim()).filter(Boolean).join('\n\n');
+}
+
+function projectForFinished(item) {
+  const base = String(item?.name || '');
+  return (state.projects || [])
+    .filter((p) => p?.name && base.startsWith(p.name))
+    .sort((a, b) => b.name.length - a.name.length)[0] || null;
+}
+
 function withHookLine(lines, title) {
   const hook = String(title || reelHookTitle()).replace(/\s+/g, ' ').trim();
   const next = (lines || []).map((l) => String(l).trim()).filter(Boolean);
@@ -3405,11 +3741,27 @@ function withHookLine(lines, title) {
   return [hook, ...next.filter((l) => compact(l) !== compact(hook))];
 }
 
+function captionBandOf(p) {
+  const vids = p?.videos || [];
+  for (const v of [vids[p.pick], ...vids].filter(Boolean)) {
+    const b = v.captionBand;
+    if (b && Number(b.h) >= 0.04) return b;
+  }
+  return null;
+}
+
+function subYFromBand(band) {
+  if (!band || Number(band.h) < 0.04) return 1375;
+  return Math.max(120, Math.min(1800, Math.round((Number(band.y) + Number(band.h) / 2) * 1920)));
+}
+
+function applyCaptionSubY(p) {
+  p.edit.subY = subYFromBand(captionBandOf(p));
+}
+
 function coverEdit(p, edit) {
-  const band = (p.videos || []).map((v) => v.captionBand).find((b) => b && Number(b.h) >= 0.04);
-  if (!band) return edit;
-  const subY = Math.round((Number(band.y) + Number(band.h) / 2) * 1920);
-  return { ...edit, subY, captionCover: true };
+  const subY = Number.isFinite(Number(edit.subY)) ? Number(edit.subY) : subYFromBand(captionBandOf(p));
+  return { ...edit, bg: false, border: true, captionCover: false, subY };
 }
 
 function productContext() {
@@ -3470,13 +3822,58 @@ function setPath(obj, path, val) {
   target[last] = val;
 }
 
+const LOCAL_VIDEO = /\.(mp4|mov|mkv|webm|m4v|avi)$/i;
+
+function ensureLocalProjectName() {
+  const p = state.p;
+  if (!p.name || p.name === '새 프로젝트') {
+    const stamp = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    p.name = `내영상 ${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())} ${pad(stamp.getHours())}${pad(stamp.getMinutes())}`;
+  }
+}
+
+function acceptLocalVideos(rows, skipped) {
+  const p = state.p;
+  if (!rows?.length) return '선택한 영상이 없습니다.';
+  p.videos.push(...rows);
+  p.pick = p.videos.length - 1;
+  p.analyzed = false;
+  p.scenes = [];
+  if (!p.product?.name && rows[0]?.title) {
+    p.product = { name: String(rows[0].title).slice(0, 40), features: [], kw: { ko: [String(rows[0].title).slice(0, 24)] }, flow: '' };
+  }
+  return `${rows.length}개 영상을 올렸습니다.${skipped ? ` ${skipped}개는 8개 제한으로 빠졌습니다.` : ''} 고른 뒤 원클릭 영상 생성을 누르세요.`;
+}
+
+function addDroppedVideos(paths) {
+  const p = state.p;
+  const files = (paths || []).filter((f) => LOCAL_VIDEO.test(f));
+  if (!files.length) return toast('MP4, MOV, MKV, WebM, AVI 영상만 끌어다 놓을 수 있습니다.');
+  if (p.videos.length >= 8) return toast('영상은 최대 8개까지 넣을 수 있습니다.');
+  ensureLocalProjectName();
+  const room = 8 - p.videos.length;
+  const take = files.slice(0, room);
+  task('내 PC 영상 넣는 중', async () => {
+    const rows = await api('importVideoFiles', p.name, take);
+    return acceptLocalVideos(rows, files.length - take.length);
+  });
+}
+
 const actions = {
   nav: (d) => {
     state.view = d.val;
     state.modal = null;
-    if (d.val === 'projects') api('listProjects').then((l) => { state.projects = l; render(); }).catch(() => {});
+    if (d.val === 'projects') {
+      api('listProjects').then((l) => { state.projects = l; render(); }).catch(() => {});
+      api('listFinished').then((l) => { state.finished = l; render(); }).catch(() => {});
+    }
     if (d.val === 'settings' || d.val === 'tools') refreshMeta().then(render);
-    if (d.val === 'blast') loadBlast();
+    if (d.val === 'blast') {
+      if (!state.blast.file && state.p.exported) setBlastFile(state.p.exported);
+      applyBlastCopy(state.p, false);
+      loadBlast();
+    }
   },
   set: (d) => { state[d.key] = d.val; },
   toggleFindVideoOnly: () => { state.findVideoOnly = !state.findVideoOnly; },
@@ -3688,12 +4085,79 @@ const actions = {
     saveLensGroups();
   },
   closeModal: () => { state.modal = null; state.exportOpen = false; stopAudio(); api('shareStop').catch(() => {}); },
+  openFinishedDir: () => { api('openFinishedDir').catch(() => {}); return false; },
+  projectPreview: (d) => {
+    const item = state.projects[+d.i];
+    if (!item?.preview) return toast('아직 미리볼 영상이 없습니다.');
+    state.modal = { type: 'video', file: item.preview };
+  },
+  finishedPreview: (d) => {
+    const item = state.finished[+d.i];
+    if (!item?.file) return toast('영상을 찾지 못했습니다.');
+    state.modal = { type: 'video', file: item.file };
+  },
+  finishedTelegram: (d) => {
+    const item = state.finished[+d.i];
+    if (!item?.file) return toast('영상을 찾지 못했습니다.');
+    task('텔레그램으로 보내는 중', async () => {
+      let caption = item.name;
+      if (state.blast.file === item.file && (String(state.blast.title || '').trim() || String(state.blast.desc || '').trim())) {
+        caption = [state.blast.title, state.blast.desc].map((s) => String(s || '').trim()).filter(Boolean).join('\n\n');
+      } else {
+        const listed = projectForFinished(item);
+        const loaded = listed?.name ? await api('loadProject', listed.name).catch(() => null) : null;
+        const project = loaded || (state.p?.name && String(item.name).startsWith(state.p.name) ? state.p : null);
+        if (project) caption = deployCaption(project) || caption;
+      }
+      return api('telegramSend', item.file, caption);
+    }, (r) => `텔레그램으로 보냈습니다. 제목과 설명도 함께 갔습니다. 휴대폰에서 @${r.bot || '봇'} 대화를 여세요.`);
+    return false;
+  },
+  telegramConnect: () => {
+    actions.saveSettings().then(() => task('텔레그램 봇 연결 중', async () => {
+      const r = await api('telegramConnect');
+      if (!r.ok) {
+        if (r.url) api('openExternal', r.url);
+        throw new Error(r.bot ? `텔레그램에서 @${r.bot} 대화를 열고 시작을 누른 뒤, 다시 연결을 누르세요.` : '봇 토큰을 확인하세요.');
+      }
+      return r;
+    }, (r) => `텔레그램 연결됨 — @${r.bot}`).then(refreshMeta).then(render));
+    return false;
+  },
   backdrop: (d, e) => {
     if (e.target.classList.contains('modal-back')) { state.modal = null; stopAudio(); } else return false;
   },
-  stop: () => { api('cancel'); return false; },
+  stop: () => { state.stop = true; api('cancel'); return false; },
+  copyStatusLog: () => {
+    const text = statusLogText();
+    if (!text) return toast('복사할 로그가 없습니다.');
+    copyText(text, '진행 로그를 복사했습니다.');
+    return false;
+  },
+  toggleStatusLog: () => {
+    if (!state.status) return false;
+    state.status.logClosed = !state.status.logClosed;
+    updateStatus();
+    return false;
+  },
   clearStatus: () => { state.status = null; updateStatus(); return false; },
   openUrl: (d) => { openUrl(d.val); return false; },
+  openChannel: async (d) => {
+    try {
+      let url = d.val || '';
+      if (!/^https?:\/\//.test(url)) {
+        await api('youtubeChannelUrl');
+        await refreshMeta();
+        url = channelUrl('youtube');
+        render();
+      }
+      if (!/^https?:\/\//.test(url)) toast('채널 주소를 찾지 못했습니다.');
+      else openUrl(url);
+    } catch (e) {
+      toast(e.message || '채널을 열지 못했습니다.');
+    }
+    return false;
+  },
   showItem: (d) => { api('showItem', d.val); return false; },
   folder: (d) => { api('openFolder', d.val === '__root' ? '' : state.p.name, d.val === '__root' ? '' : d.val); return false; },
 
@@ -3722,7 +4186,7 @@ const actions = {
     state.platform = 'all';
     const kw = state.analysis[d.url]?.analysis?.kw;
     state.findQ1 = kw?.en?.[0] || kw?.ko?.[0] || item.title.replace(/#\S+/g, '').trim().slice(0, 40);
-    state.findQ2 = kw?.zh?.[0] || '';
+    rememberZh(state.findQ1, kw?.zh?.[0] || '');
     setProductFromAnalysis(d.url);
     runSearch();
     return false;
@@ -3734,7 +4198,7 @@ const actions = {
     return false;
   },
   pickKw: (d) => {
-    if (/[\u4e00-\u9fff]/.test(d.val) && !/[가-힣]/.test(d.val)) state.findQ2 = d.val;
+    if (/[\u4e00-\u9fff]/.test(d.val) && !/[가-힣]/.test(d.val)) rememberZh(state.findQ1, d.val, true);
     else { state.findQ1 = d.val; runSearch(); }
   },
   styleFromTrend: (d) => {
@@ -3861,6 +4325,16 @@ const actions = {
     return false;
   },
   download: () => { runDownload(); return false; },
+  addLocalVideos: () => {
+    const p = state.p;
+    if (p.videos.length >= 8) return toast('영상은 최대 8개까지 넣을 수 있습니다.');
+    ensureLocalProjectName();
+    task('내 PC 영상 넣는 중', async () => {
+      const rows = await api('importLocalVideos', p.name, 8 - p.videos.length);
+      return acceptLocalVideos(rows, 0);
+    });
+    return false;
+  },
   oneClick: (d) => {
     task('원클릭 영상 생성 중', () => makeOneClick(d), (msg) => msg || '원클릭 생성 완료');
     return false;
@@ -3879,8 +4353,9 @@ const actions = {
     task('소스 영상 분석 중', async () => {
       const p = state.p;
       const ready = p.videos.filter((v) => v.file);
-      const r = await api('analyzeSources', p.name, ready.map((v) => ({ file: v.originalFile || v.file })));
+      const r = await api('analyzeSources', p.name, ready.map((v) => ({ file: v.originalFile || v.file, local: !!v.local, forceClean: true })));
       r.forEach((x, i) => Object.assign(ready[i], x));
+      applyCaptionSubY(p);
       p.analyzed = true;
       p.scenes = [];
     }, () => `소스 영상 분석 완료 — ${state.p.videos.reduce((a, v) => a + (v.scenes?.length || 0), 0)}개 장면, 원본 음성과 자막 자리를 지웠습니다`);
@@ -4034,7 +4509,6 @@ const actions = {
       });
       if (p.edit.thumbLead && p.thumbnail) file = await api('prependThumb', p.name, file, p.thumbnail);
       p.exported = file;
-      state.share = await api('shareStart', file).catch(() => null);
       state.modal = { type: 'done', file };
     }, '내보내기 완료');
     return false;
@@ -4299,7 +4773,29 @@ const actions = {
     return false;
   },
   copyAll: () => { copyText(state.p.coupang.map((c) => `${c.title}\n${c.url}`).join('\n\n'), '링크를 전체 복사했습니다.'); return false; },
+  copySearchKo: () => {
+    const text = koSearchKeyword(state.p);
+    if (!text) return toast('복사할 검색 키워드가 없습니다.');
+    copyText(text, '검색 키워드를 복사했습니다.');
+    return false;
+  },
+  copyProductTitle: () => {
+    const text = productTitleText(state.p);
+    if (!text) return toast('복사할 제목이 없습니다.');
+    copyText(text, '제목을 복사했습니다.');
+    return false;
+  },
   copyLink: (d) => { copyText(state.p.coupang[+d.i].url, '수익 링크를 복사했습니다.'); return false; },
+  saveCoupangThumb: (d) => {
+    const c = state.p.coupang[+d.i];
+    if (!c?.img) return toast('저장할 썸네일이 없습니다.');
+    const base = koSearchKeyword(state.p) || c.title || 'coupang';
+    task('썸네일 저장 중', async () => {
+      const file = await api('saveRemoteImage', c.img, base);
+      return file ? '썸네일을 저장했습니다.' : '저장을 취소했습니다.';
+    });
+    return false;
+  },
   removeCoupang: (d) => { state.p.coupang.splice(+d.i, 1); },
   clearCoupang: () => { state.p.coupang = []; },
 
@@ -4433,7 +4929,7 @@ const actions = {
   },
   youtubeConnect: () => {
     actions.saveSettings().then(() =>
-      task('유튜브 계정 연결 중 (브라우저에서 로그인하세요)', () => api('youtubeConnect'), (name) => `유튜브 연결 완료 — ${name}`).then(refreshMeta).then(render),
+      task('유튜브: 기본 브라우저에서 로그인을 완료하세요', () => api('youtubeConnect'), (name) => `유튜브 연결 완료 — ${name}`).then(refreshMeta).then(render),
     );
     return false;
   },
@@ -4449,7 +4945,7 @@ const actions = {
     await api('setSettings', patch);
     state.modal = null;
     const s = snsOf(key);
-    await task(s.oauth ? `${s.name} 연결 중 (브라우저에서 로그인하세요)` : `${s.name} 연결 확인 중`, () => api('snsConnect', key), (name) => `${s.name} 연결 완료 — ${name}`);
+    await task(s.oauth ? `${s.name}: 기본 브라우저에서 로그인을 완료하세요` : `${s.name} 연결 확인 중`, () => api('snsConnect', key), (name) => `${s.name} 연결 완료 — ${name}`);
     await refreshMeta();
     if (snsConn(key)) { state.blast.targets[key] = true; saveBlastTargets(); }
     render();
@@ -4484,13 +4980,11 @@ const actions = {
   blastFromWork: () => {
     const p = state.p;
     setBlastFile(p.exported);
-    if (!state.blast.title) state.blast.title = p.upload.title || p.name;
-    if (!state.blast.desc) state.blast.desc = p.upload.desc || '';
+    applyBlastCopy(p, false);
     return false;
   },
   blastTextFromWork: () => {
-    state.blast.title = state.p.upload.title || state.p.name;
-    state.blast.desc = state.p.upload.desc || '';
+    applyBlastCopy(state.p, true);
   },
   blastToggle: (d) => {
     state.blast[d.key] = !state.blast[d.key];
@@ -4537,8 +5031,7 @@ const actions = {
     const p = state.p;
     state.view = 'blast';
     if (p.exported) setBlastFile(p.exported);
-    state.blast.title = p.upload.title || p.name;
-    state.blast.desc = p.upload.desc || '';
+    applyBlastCopy(p, true);
     loadBlast();
   },
 };
@@ -4613,19 +5106,37 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('dragover', (e) => {
-  if (state.view !== 'blast') return;
+  const prep = state.view === 'work' && state.workTab === 1;
+  const blast = state.view === 'blast';
+  if (!prep && !blast) return;
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
   e.preventDefault();
-  $('#blast-drop')?.classList.toggle('over', !!e.target.closest?.('#blast-drop'));
+  if (blast) $('#blast-drop')?.classList.toggle('over', !!e.target.closest?.('#blast-drop'));
+  if (prep) $('#prep-drop')?.classList.toggle('over', !!e.target.closest?.('#prep-panel'));
 });
 document.addEventListener('dragleave', (e) => {
-  if (!e.relatedTarget) $('#blast-drop')?.classList.remove('over');
+  if (!e.relatedTarget) {
+    $('#blast-drop')?.classList.remove('over');
+    $('#prep-drop')?.classList.remove('over');
+  }
 });
 document.addEventListener('drop', (e) => {
-  if (state.view !== 'blast') return;
+  const prep = state.view === 'work' && state.workTab === 1;
+  const blast = state.view === 'blast';
+  if (!prep && !blast) return;
   e.preventDefault();
   $('#blast-drop')?.classList.remove('over');
-  const f = e.dataTransfer?.files?.[0];
-  if (f && window.native?.pathFor) setBlastFile(window.native.pathFor(f));
+  $('#prep-drop')?.classList.remove('over');
+  const files = [...(e.dataTransfer?.files || [])];
+  if (prep && e.target.closest?.('#prep-panel')) {
+    const paths = files.map((f) => window.native?.pathFor?.(f)).filter(Boolean);
+    addDroppedVideos(paths);
+    return;
+  }
+  if (blast && e.target.closest?.('#blast-drop')) {
+    const f = files[0];
+    if (f && window.native?.pathFor) setBlastFile(window.native.pathFor(f));
+  }
 });
 
 document.addEventListener('dblclick', (e) => {
@@ -4709,6 +5220,24 @@ document.addEventListener('input', (e) => {
     if (m) m.innerHTML = blastMeters();
     const cap = $('#phone-cap');
     if (cap) cap.innerHTML = phoneCaption();
+    return;
+  }
+  if (t.dataset.modelState === 'findQ1') {
+    state.findQ1 = t.value;
+    const next = String(t.value || '').trim();
+    if (!state.zhManual && state.zhSource && state.zhSource !== next) {
+      state.findQ2 = '';
+      state.zhSource = '';
+      const zhInput = document.querySelector('[data-model-state="findQ2"]');
+      if (zhInput) zhInput.value = '';
+    }
+    return;
+  }
+  if (t.dataset.modelState === 'findQ2') {
+    state.findQ2 = t.value;
+    const typed = String(t.value || '').trim();
+    state.zhManual = hasHan(typed);
+    if (!typed) state.zhSource = '';
     return;
   }
   if (t.dataset.modelState) {

@@ -7,6 +7,7 @@ const CDP_PORT = 9223;
 const INCOGNITO_PORT = 9224;
 const REAL_DATA_DIR = path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data');
 const DEBUG_DATA_DIR = path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'DebugProfile');
+const HEADLESS_DIR = path.join(process.env.LOCALAPPDATA || '', 'ShoppingLens', 'chrome-headless');
 const INCOGNITO_DIR = path.join(process.env.LOCALAPPDATA || '', 'ShoppingLens', 'chrome-incognito');
 
 let chromeProc = null;
@@ -120,6 +121,18 @@ function copyProfile() {
   console.log('[chromeDriver] 프로필 복사 완료');
 }
 
+function prepareHeadlessProfile(srcUserData) {
+  fs.rmSync(HEADLESS_DIR, { recursive: true, force: true });
+  const dstNetwork = path.join(HEADLESS_DIR, 'Default', 'Network');
+  fs.mkdirSync(dstNetwork, { recursive: true });
+  const localState = path.join(srcUserData, 'Local State');
+  if (fs.existsSync(localState)) fs.copyFileSync(localState, path.join(HEADLESS_DIR, 'Local State'));
+  const cookie = path.join(srcUserData, 'Default', 'Network', 'Cookies');
+  if (!fs.existsSync(cookie)) throw new Error('Chrome 로그인 쿠키를 찾지 못했습니다.');
+  fs.copyFileSync(cookie, path.join(dstNetwork, 'Cookies'));
+  console.log('[chromeDriver] 헤드리스 프로필 준비');
+}
+
 async function launch() {
   // Already running with CDP?
   if (chromeProc && !chromeProc.killed) {
@@ -153,28 +166,22 @@ async function launch() {
     chromeBusy = /chrome\.exe/i.test(out);
   } catch {}
 
-  let userDataDir;
   if (chromeBusy) {
-    console.log('[chromeDriver] Chrome이 이미 실행 중 → DebugProfile 복사본 사용 (기존 창은 유지)');
+    console.log('[chromeDriver] Chrome이 이미 실행 중 → 로그인 쿠키만 복사 (기존 창은 유지)');
     copyProfile();
-    userDataDir = DEBUG_DATA_DIR;
+    prepareHeadlessProfile(DEBUG_DATA_DIR);
   } else {
-    const SUBST_DRIVE = 'Z:';
-    try { execSync(`subst ${SUBST_DRIVE} /D`, { stdio: 'ignore', timeout: 3000 }); } catch {}
-    try {
-      execSync(`subst ${SUBST_DRIVE} "${REAL_DATA_DIR}"`, { stdio: 'ignore', timeout: 3000 });
-      console.log(`[chromeDriver] subst ${SUBST_DRIVE} -> ${REAL_DATA_DIR}`);
-    } catch (e) {
-      console.error('[chromeDriver] subst 실패:', e.message);
-      throw new Error('Chrome 디버그 드라이브 생성 실패');
-    }
-    userDataDir = `${SUBST_DRIVE}\\`;
+    prepareHeadlessProfile(REAL_DATA_DIR);
   }
 
-  console.log(`[chromeDriver] Chrome 시작 (${chromeBusy ? 'DebugProfile' : '실제 프로필'} + 디버그 포트)...`);
+  console.log('[chromeDriver] 헤드리스 Chrome 시작...');
   chromeProc = spawn(exe, [
+    '--headless=new',
+    '--disable-gpu',
+    '--mute-audio',
+    '--disable-blink-features=AutomationControlled',
     `--remote-debugging-port=${CDP_PORT}`,
-    `--user-data-dir=${userDataDir}`,
+    `--user-data-dir=${HEADLESS_DIR}`,
     '--profile-directory=Default',
     '--no-first-run',
     '--no-default-browser-check',

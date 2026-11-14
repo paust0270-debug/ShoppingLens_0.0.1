@@ -228,7 +228,8 @@ async function download(url, dir, base, onProgress) {
   if (socialPlatforms.includes(plat)) {
     try {
       const social = require('./socialSearch');
-      const href = await social.grabSocialVideo(url, plat);
+      const hit = await social.grabSocialVideo(url, plat);
+      const href = typeof hit === 'string' ? hit : (hit && hit.url);
       if (href) {
         const dest = path.join(dir, `${base}.mp4`);
         if (/\.m3u8(\?|$)/i.test(href)) {
@@ -266,7 +267,8 @@ async function download(url, dir, base, onProgress) {
   } catch (e) {
     if (!socialPlatforms.includes(plat)) throw e;
     const social = require('./socialSearch');
-    const href = await social.grabSocialVideo(url, plat);
+    const again = await social.grabSocialVideo(url, plat);
+    const href = typeof again === 'string' ? again : (again && again.url);
     if (!href) throw e;
     const dest = path.join(dir, `${base}.mp4`);
     if (/\.m3u8(\?|$)/i.test(href)) {

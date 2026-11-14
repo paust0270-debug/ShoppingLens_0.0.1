@@ -30,6 +30,20 @@ function provider() {
 
 const hasAI = () => !!provider();
 
+async function pause(ms) {
+  const step = 500;
+  let left = ms;
+  while (left > 0) {
+    checkCancel();
+    const n = Math.min(step, left);
+    await new Promise((r) => setTimeout(r, n));
+    left -= n;
+  }
+  checkCancel();
+}
+
+const geminiBusy = (msg) => /시간 초과|비어|503|429|502|504|UNAVAILABLE|high demand|overloaded/i.test(String(msg));
+
 async function readJson(res, label) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${label} 오류 (${res.status}): ${body.error?.message || JSON.stringify(body).slice(0, 200)}`);
@@ -86,22 +100,30 @@ async function geminiJson(s, system, prompt, images, ms) {
   const chain = preferred === 'gemini-3.5-flash-lite' ? [preferred] : [preferred, 'gemini-3.5-flash-lite'];
   let last;
   for (let i = 0; i < chain.length; i++) {
-    try {
-      const body = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${chain[i]}:generateContent?key=${s.gemini}`, {
-        'Content-Type': 'application/json',
-      }, {
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }, ...images.map((img) => ({ inline_data: { mime_type: img.mime || 'image/jpeg', data: img.data || img } }))] }],
-        generationConfig: { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } },
-      }, 'Gemini', ms);
-      const text = (body.candidates?.[0]?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text).join('');
-      if (!text) throw new Error('Gemini 응답이 비어 있습니다.');
-      return parseLoose(text);
-    } catch (e) {
-      last = e;
-      if (/CANCELLED/.test(String(e.message))) throw e;
-      const retryable = /시간 초과|비어|503|404|429|UNAVAILABLE|high demand|overloaded/i.test(String(e.message));
-      if (!retryable || i === chain.length - 1) throw e;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const body = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${chain[i]}:generateContent?key=${s.gemini}`, {
+          'Content-Type': 'application/json',
+        }, {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }, ...images.map((img) => ({ inline_data: { mime_type: img.mime || 'image/jpeg', data: img.data || img } }))] }],
+          generationConfig: { responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } },
+        }, 'Gemini', ms);
+        const text = (body.candidates?.[0]?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text).join('');
+        if (!text) throw new Error('Gemini 응답이 비어 있습니다.');
+        return parseLoose(text);
+      } catch (e) {
+        last = e;
+        if (/CANCELLED/.test(String(e.message))) throw e;
+        const missing = /404/.test(String(e.message));
+        if (missing) break;
+        if (!geminiBusy(e.message)) throw e;
+        if (attempt === 0) {
+          await pause(6000);
+          continue;
+        }
+        break;
+      }
     }
   }
   throw last;
@@ -244,6 +266,29 @@ JSON: {"ok":false,"index":0,"why":"같은 제품이 없음"}`,
   );
 }
 
+function relatedZh(keyword, used) {
+  const skip = (used || []).map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12);
+  return json(
+    '1688에서 상품 영상을 찾는 짧은 중국어 간체 검색어만 만듭니다.',
+    `원래 검색어와 같은 상품을 1688에서 찾기 위한 다른 검색어 4개를 만드세요.
+문장으로 설명하지 말고, 각 2~12자의 상품 검색어로 쓰세요. 이미 검색한 단어는 넣지 마세요.
+원래 검색어: ${String(keyword || '').slice(0, 80)}
+이미 검색: ${skip.join(' | ') || '(없음)'}
+JSON: {"qs":["浴室暖风机","免打孔取暖器","卫生间暖风机","壁挂取暖器"]}`,
+  ).then((r) => {
+    const list = Array.isArray(r?.qs) ? r.qs : [];
+    const seen = new Set(skip);
+    const out = [];
+    for (const item of list) {
+      const s = String(item || '').replace(/[“”"']/g, '').replace(/\s+/g, ' ').trim();
+      if (!/[\u4e00-\u9fff]/.test(s) || s.length < 2 || seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out.slice(0, 4);
+  });
+}
+
 function translateZh(text) {
   return json(
     '샤오홍슈(小红书)와 도우인 검색용으로, 상품을 찾는 짧은 중국어 간체 검색어만 만듭니다.',
@@ -268,8 +313,8 @@ JSON: {"ok":true,"person":false,"chinese":false,"why":""}`,
 
 function captionBand(images) {
   return json(
-    '쇼츠 프레임에서 편집으로 올린 자막의 위치만 찾습니다. 상품 포장, 로고, 배경에 원래 있는 글자는 자막이 아닙니다.',
-    `이미지 ${images.length}장은 한 영상의 다른 장면입니다. 편집으로 올린 큰 자막이 공통으로 놓인 세로 구간을 화면 높이 대비 비율로 답하세요. 위·가운데·아래 어디든 될 수 있습니다. 맨 위가 0, 맨 아래가 1입니다. 자막이 없으면 h를 0으로 하세요.
+    '쇼츠 프레임에서 씌워진 자막(중국어 한자 제목·문구 포함)의 위치만 찾습니다. 상품 포장, 로고, 배경에 원래 있는 글자는 자막이 아닙니다.',
+    `이미지 ${images.length}장은 한 영상의 다른 장면입니다. 화면 위에 편집으로 올린 큰 자막이나 중국어 문구가 공통으로 놓인 세로 구간을 화면 높이 대비 비율로 답하세요. 위·가운데·아래 어디든 될 수 있습니다. 맨 위가 0, 맨 아래가 1입니다. 그 자리에 한국어 자막을 덮을 수 있게 구간을 조금 넉넉히 잡으세요. 자막이 없으면 h를 0으로 하세요.
 JSON: {"y":0.62,"h":0.08}`,
     images,
   );
@@ -347,4 +392,4 @@ JSON: {"ideas":["아이디어 5개"],"titles":["제목 5개"]}`,
   );
 }
 
-module.exports = { hasAI, provider, json, transcribe, analyzeVideo, analyzeStyle, script, labelScenes, captionBand, judgeSource, translateZh, coupangQuery, coupangSame, matchClips, matchScenes, fixSubtitles, uploadTexts, lensReport, lensScript, lensIdeas };
+module.exports = { hasAI, provider, json, transcribe, analyzeVideo, analyzeStyle, script, labelScenes, captionBand, judgeSource, translateZh, relatedZh, coupangQuery, coupangSame, matchClips, matchScenes, fixSubtitles, uploadTexts, lensReport, lensScript, lensIdeas };

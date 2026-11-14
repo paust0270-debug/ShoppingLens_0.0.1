@@ -50,19 +50,23 @@ async function pageHint(tab) {
   return tab.eval(`({ href: location.href || '', text: (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 900) })`).catch(() => ({ href: '', text: '' }));
 }
 
-async function waitIfBlocked(tab, label) {
+async function waitIfBlocked(tab, label, progress) {
   const start = Date.now();
   let warned = false;
+  let last = 0;
   while (Date.now() - start < 300000) {
     checkCancel();
     const h = await pageHint(tab);
     const blob = `${h.href} ${h.text}`;
     if (!BLOCK_HINT.test(blob)) return false;
-    if (!warned) {
-      const msg = ACCESS_BLOCK.test(blob)
-        ? `${label || '1688'} 접속 이상 — 이 안내가 있으면 영상 상세가 숨겨집니다. 크롬에서 없어질 때까지 기다립니다`
-        : `${label || 'search'} 보안 확인 대기 — 크롬 창에서 슬라이더를 맞추면 이어갑니다`;
+    const waited = Math.round((Date.now() - start) / 1000);
+    const msg = ACCESS_BLOCK.test(blob)
+      ? `${label || '1688'} 접속 이상 ${waited}초 대기 · 크롬 안내가 사라지면 이어갑니다 · ${(h.href || '').slice(0, 80)}`
+      : `${label || 'search'} 보안 확인 ${waited}초 대기 · 크롬에서 슬라이더를 맞추세요`;
+    if (!warned || Date.now() - last > 8000) {
       console.log(`[${label || 'search'}] ${msg}`);
+      if (progress) progress({ text: msg });
+      last = Date.now();
       warned = true;
       try { await tab.send('Page.bringToFront'); } catch {}
     }
@@ -187,7 +191,8 @@ async function searchSocial(platform, pageUrl, label) {
         continue;
       }
       const got = (last.items || []).length;
-      if ((platform === 'ali1688' || platform === 'taobao') && got < 6) {
+      const listGoal = platform === 'ali1688' ? 24 : 6;
+      if ((platform === 'ali1688' || platform === 'taobao') && got < listGoal) {
         try {
           const extra = await tab.eval(IMG_SCRAPE);
           if ((extra.items || []).length > got) last = extra;
@@ -195,7 +200,11 @@ async function searchSocial(platform, pageUrl, label) {
           if (/CANCELLED/.test(String(e.message))) throw e;
         }
       }
-      if ((last.items || []).length >= 6 && (platform !== 'xhs' || i >= 4)) break;
+      if (platform === 'ali1688' && i > 0 && i % 2 === 0) {
+        await tab.eval('window.scrollBy(0, Math.max(900, window.innerHeight))').catch(() => {});
+        await sleep(500);
+      }
+      if ((last.items || []).length >= listGoal && (platform !== 'xhs' || i >= 4)) break;
       if (last.gate && i >= 5) break;
     }
     const look = LOOK[platform] || { hue: 20, emoji: '▶' };
@@ -400,14 +409,38 @@ const PRODUCT_VIDEO_EXTRACT = `(() => {
   return '';
 })()`;
 
+const VIDEO_POSTER_EXTRACT = `(() => {
+  const abs = (u) => {
+    const s = String(u || '').trim();
+    if (!s || s.startsWith('data:')) return '';
+    if (s.startsWith('//')) return 'https:' + s;
+    try { return new URL(s, location.href).href; } catch (e) { return ''; }
+  };
+  const video = document.querySelector('video');
+  const fromVideo = abs(video && (video.poster || video.getAttribute('poster')));
+  if (fromVideo) return fromVideo;
+  const html = document.documentElement ? document.documentElement.innerHTML : '';
+  const keys = ['videoCoverUrl', 'videoImgUrl', 'coverUrl', 'posterUrl', 'videoPoster', 'mainVideoPic'];
+  for (const key of keys) {
+    const re = new RegExp('"' + key + '"\\\\s*:\\\\s*"([^"]+)"', 'i');
+    const m = html.match(re);
+    if (!m) continue;
+    const u = abs(m[1].replace(/\\\\u002F/g, '/').replace(/\\\\\\//g, '/'));
+    if (u) return u;
+  }
+  const img = document.querySelector('[class*="video" i] img, [class*="poster" i] img');
+  return abs(img && (img.currentSrc || img.src));
+})()`;
+
 function pickProductVideo(hits) {
   return hits.find((u) => /\.(mp4|m3u8)(\?|$)/i.test(u) && PRODUCT_VIDEO_RE.test(u))
     || hits.find((u) => PRODUCT_VIDEO_RE.test(u))
     || '';
 }
 
-async function grabProductVideo(pageUrl, platform) {
+async function grabProductVideo(pageUrl, platform, progress) {
   const dest = canonicalShopUrl(pageUrl) || pageUrl;
+  const say = (t) => { console.log(`[grabProductVideo] ${t}`); if (progress) progress({ text: t }); };
   const tab = await chromeDriver.openTab('about:blank');
   try {
     const videoHits = [];
@@ -417,12 +450,12 @@ async function grabProductVideo(pageUrl, platform) {
       if (PRODUCT_VIDEO_RE.test(u)) videoHits.push(u);
     });
     if (platform === 'ali1688' && !/detail\.1688\.com\/offer\/\d+/.test(dest)) {
-      console.log(`[grabProductVideo] 1688 상세 아님 skip ${dest.slice(0, 80)}`);
+      say(`1688 상세가 아니라 건너뜀 · ${dest.slice(0, 90)}`);
       return '';
     }
-    console.log(`[grabProductVideo] ${platform || ''} ${dest}`);
+    say(`${platform === 'ali1688' ? '1688' : (platform || '상품')} 상세 여는 중 · ${dest}`);
     await tab.navigate(dest);
-    if (await waitIfBlocked(tab, platform || 'shop')) throw new Error(ACCESS_ERR);
+    if (await waitIfBlocked(tab, platform || 'shop', progress)) throw new Error(ACCESS_ERR);
     await sleep(1200);
     await tab.eval(`(() => {
       const labels = [...document.querySelectorAll('li, span, div, a, button, img')];
@@ -437,8 +470,10 @@ async function grabProductVideo(pageUrl, platform) {
       href = pickProductVideo(videoHits);
       if (href) break;
       try { href = await tab.eval(PRODUCT_VIDEO_EXTRACT); } catch { href = ''; }
+      if (!href && i === 2) say(`영상 네트워크 대기 중 · 히트 ${videoHits.length} · ${dest.slice(-28)}`);
     }
     if (!href) {
+      say(`영상 탭 한 번 더 누르는 중 · ${dest.slice(-32)}`);
       await tab.eval(`(() => {
         const thumbs = [...document.querySelectorAll('img, li, div')].filter((el) => /video|play/i.test(el.className || '') || el.getAttribute('aria-label') === '视频');
         for (const el of thumbs.slice(0, 4)) try { el.click(); } catch (e) {}
@@ -449,13 +484,18 @@ async function grabProductVideo(pageUrl, platform) {
         try { href = await tab.eval(PRODUCT_VIDEO_EXTRACT); } catch { href = ''; }
       }
     }
-    return href || '';
+    let poster = '';
+    if (href) {
+      try { poster = await tab.eval(VIDEO_POSTER_EXTRACT); } catch { poster = ''; }
+      say(`영상 URL 확보 · ${href.slice(0, 140)}`);
+    } else say(`영상 URL 없음 · 네트워크 ${videoHits.length}건 · ${dest}`);
+    return { url: href || '', poster: String(poster || '') };
   } finally {
     await tab.close();
   }
 }
 
-async function grabSocialVideo(pageUrl, platform) {
+async function grabSocialVideo(pageUrl, platform, progress) {
   if (!platform) {
     if (/xiaohongshu|rednote/i.test(pageUrl)) platform = 'xhs';
     else if (/douyin/i.test(pageUrl)) platform = 'douyin';
@@ -466,8 +506,11 @@ async function grabSocialVideo(pageUrl, platform) {
   switch (platform) {
     case 'xhs': return grabXhsVideo(pageUrl);
     case 'douyin': return grabDouyinVideo(pageUrl);
-    case 'taobao':
-    case 'ali1688': return grabProductVideo(pageUrl, platform);
+    case 'taobao': {
+      const hit = await grabProductVideo(pageUrl, platform, progress);
+      return hit?.url || '';
+    }
+    case 'ali1688': return grabProductVideo(pageUrl, platform, progress);
     default: return '';
   }
 }
@@ -490,35 +533,139 @@ function refererFor(fileUrl, platform) {
   return PLATFORM_REFERER.xhs;
 }
 
-async function fetchSocialFile(fileUrl, dest, platform) {
+function fileOk(dest) {
+  return fs.existsSync(dest) && fs.statSync(dest).size >= 20000;
+}
+
+function isTaobaoCdn(fileUrl) {
+  return /cloud\.video\.taobao|cloudvideocdn\.taobao|video\.alicdn|svideo\.alicdn|cbu01\.alicdn|video\.cbu/i.test(fileUrl);
+}
+
+async function streamNetFetch(fileUrl, dest, headers) {
+  const { trackFetch, releaseFetch } = require('./run');
+  const ctrl = trackFetch();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  const tmp = dest + '.part';
+  const ws = fs.createWriteStream(tmp);
+  try {
+    const ses = session.fromPartition(PART);
+    const res = await net.fetch(fileUrl, { session: ses, headers, signal: ctrl.signal });
+    if (!res.ok) throw new Error(`영상 받기 실패 (${res.status})`);
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      for (;;) {
+        checkCancel();
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) ws.write(Buffer.from(value));
+      }
+    } else {
+      ws.write(Buffer.from(await res.arrayBuffer()));
+    }
+  } catch (e) {
+    try { ws.destroy(); } catch {}
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+    if (e.name === 'AbortError' || /aborted/i.test(e.message || '')) throw new Error('브라우저 세션 시간 초과');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    releaseFetch(ctrl);
+    await new Promise((ok) => {
+      try { ws.end(() => ok()); } catch { ok(); }
+    });
+  }
+  if (!fs.existsSync(tmp) || fs.statSync(tmp).size < 20000) {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+    throw new Error('받은 영상이 너무 작습니다.');
+  }
+  fs.renameSync(tmp, dest);
+  return dest;
+}
+
+async function ffmpegFetch(fileUrl, dest, referer) {
+  const tools = require('./tools');
+  const { run } = require('./run');
+  tools.ensureReady();
+  await run(tools.paths().ffmpeg, [
+    '-y', '-nostdin', '-hide_banner',
+    '-rw_timeout', '45000000',
+    '-user_agent', UA,
+    '-headers', `Referer: ${referer}\r\n`,
+    '-i', fileUrl, '-c', 'copy', '-movflags', '+faststart', dest,
+  ], { timeout: 60000 });
+  if (!fileOk(dest)) throw new Error('FFmpeg가 받은 영상이 너무 작습니다.');
+  return dest;
+}
+
+async function curlFetch(fileUrl, dest, referer) {
+  const { spawn } = require('child_process');
+  const tmp = dest + '.part';
+  await new Promise((ok, fail) => {
+    let done = false;
+    const finish = (fn, v) => { if (done) return; done = true; clearTimeout(timer); fn(v); };
+    const child = spawn('curl.exe', [
+      '-L', '--fail', '--connect-timeout', '20', '--max-time', '90', '--retry', '2',
+      '-A', UA, '-e', referer, '-o', tmp, fileUrl,
+    ], { windowsHide: true });
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish(fail, new Error('curl 시간 초과'));
+    }, 100000);
+    child.on('error', (e) => finish(fail, e));
+    child.on('close', (code) => {
+      code === 0 ? finish(ok) : finish(fail, new Error(`curl ${code}`));
+    });
+  });
+  if (!fs.existsSync(tmp) || fs.statSync(tmp).size < 20000) {
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+    throw new Error('curl 영상이 너무 작습니다.');
+  }
+  fs.renameSync(tmp, dest);
+  return dest;
+}
+
+let cookieImportTried = false;
+async function fetchSocialFile(fileUrl, dest, platform, pageUrl, progress) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const headers = { 'User-Agent': UA, Referer: refererFor(fileUrl, platform) };
-  let lastErr;
-  for (let i = 0; i < 3; i++) {
+  const referer = /^https?:/i.test(pageUrl) ? pageUrl : refererFor(fileUrl, platform);
+  const headers = { 'User-Agent': UA, Referer: referer };
+  const say = (t) => { console.log(`[fetchSocialFile] ${t}`); if (progress) progress({ text: t }); };
+  say(`영상 파일 받는 중 · ${String(fileUrl).slice(0, 110)}`);
+  const cdn = isTaobaoCdn(fileUrl) || platform === 'ali1688' || platform === 'taobao';
+  if (!cookieImportTried && !cdn) {
+    cookieImportTried = true;
     try {
-      const ses = session.fromPartition(PART);
-      const res = await net.fetch(fileUrl, { session: ses, headers });
-      if (!res.ok) throw new Error(`영상 받기 실패 (${res.status})`);
-      fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
-      if (!fs.existsSync(dest) || fs.statSync(dest).size < 20000) throw new Error('받은 영상이 너무 작습니다.');
-      return dest;
+      const n = await chromeCookies.importToPartition(PART);
+      say(`Chrome 쿠키 ${n || 0}개 가져옴`);
     } catch (e) {
-      lastErr = e;
-      try { fs.rmSync(dest, { force: true }); } catch {}
-      if (i < 2) await sleep(1200);
+      say(`쿠키 가져오기 생략 · ${e.message}`);
     }
   }
-  const { spawn } = require('child_process');
-  await new Promise((ok, fail) => {
-    const child = spawn('curl.exe', [
-      '-L', '--fail', '--connect-timeout', '30', '--max-time', '180', '--retry', '2',
-      '-A', UA, '-e', headers.Referer, '-o', dest, fileUrl,
-    ], { windowsHide: true });
-    child.on('error', fail);
-    child.on('close', (code) => (code === 0 ? ok() : fail(lastErr || new Error(`curl ${code}`))));
-  });
-  if (!fs.existsSync(dest) || fs.statSync(dest).size < 20000) throw lastErr || new Error('받은 영상이 너무 작습니다.');
-  return dest;
+  const steps = cdn
+    ? [
+        ['curl', () => curlFetch(fileUrl, dest, referer)],
+        ['FFmpeg', () => ffmpegFetch(fileUrl, dest, referer)],
+      ]
+    : [
+        ['브라우저 세션', () => streamNetFetch(fileUrl, dest, headers)],
+        ['curl', () => curlFetch(fileUrl, dest, referer)],
+        ['FFmpeg', () => ffmpegFetch(fileUrl, dest, referer)],
+      ];
+  let lastErr;
+  for (const [label, fn] of steps) {
+    try {
+      say(`${label}로 받는 중`);
+      const out = await fn();
+      say(`받기 완료 · ${label} · ${Math.round(fs.statSync(out).size / 1024)}KB`);
+      return out;
+    } catch (e) {
+      lastErr = e;
+      say(`${label} 실패 · ${e.message}`);
+      try { fs.rmSync(dest, { force: true }); } catch {}
+      try { fs.rmSync(dest + '.part', { force: true }); } catch {}
+    }
+  }
+  throw lastErr || new Error('영상 파일을 받지 못했습니다.');
 }
 
 const IMAGE_SEARCH_PAGES = {
